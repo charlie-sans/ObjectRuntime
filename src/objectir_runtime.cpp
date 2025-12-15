@@ -505,7 +505,7 @@ ExecutionContext::ExecutionContext(MethodRef method)
     }
 
     // Debug: Print locals mapping for this execution context
-    std::cerr << "[" << _method->GetName() << "] ExecutionContext locals: count=" << locals.size() << std::endl;
+    // std::cerr << "[" << _method->GetName() << "] ExecutionContext locals: count=" << locals.size() << std::endl;
     for (size_t i = 0; i < locals.size(); ++i) {
         std::cerr << "  [" << _method->GetName() << "] local index " << i << " -> '" << locals[i].first << "' (" << locals[i].second.ToString() << ")" << std::endl;
     }
@@ -517,7 +517,7 @@ ExecutionContext::ExecutionContext(MethodRef method)
     }
 
     // Debug: Print parameters mapping for this execution context
-    std::cerr << "[" << _method->GetName() << "] ExecutionContext parameters: count=" << parameters.size() << std::endl;
+    // std::cerr << "[" << _method->GetName() << "] ExecutionContext parameters: count=" << parameters.size() << std::endl;
     for (size_t i = 0; i < parameters.size(); ++i) {
         std::cerr << "  [" << _method->GetName() << "] param index " << i << " -> '" << parameters[i].first << "' (" << parameters[i].second.ToString() << ")" << std::endl;
     }

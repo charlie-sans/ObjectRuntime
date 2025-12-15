@@ -190,7 +190,7 @@ void IRLoader::LoadMethods(ClassRef classRef, const json& methodsArray, std::sha
                 method->AddLocal(localName, localType);
                 std::cerr << "  [" << name << "] Added local: " << localName << " (" << localType.ToString() << ")" << std::endl;
             }
-            std::cerr << "  [" << name << "] Total locals: " << method->GetLocals().size() << std::endl;
+            // std::cerr << "  [" << name << "] Total locals: " << method->GetLocals().size() << std::endl;
         }
 
         // Load label map for branch resolution
@@ -199,7 +199,7 @@ void IRLoader::LoadMethods(ClassRef classRef, const json& methodsArray, std::sha
             const auto& labelMapJson = methodJson["labelMap"];
             for (const auto& [labelName, targetIndex] : labelMapJson.items()) {
                 labelMap[labelName] = targetIndex.get<size_t>();
-                std::cerr << "  [" << name << "] Added label: " << labelName << " -> instruction " << targetIndex.get<size_t>() << std::endl;
+                // std::cerr << "  [" << name << "] Added label: " << labelName << " -> instruction " << targetIndex.get<size_t>() << std::endl;
             }
             method->SetLabelMap(labelMap);
         }
@@ -231,11 +231,11 @@ void IRLoader::LoadMethods(ClassRef classRef, const json& methodsArray, std::sha
                 for (size_t i = 0; i < instructions.size(); ++i) {
                     const auto& instr = instructions[i];
                     // std::cerr << "  [" << name << "] Parsed instr " << i << ": op=" << static_cast<int>(instr.opCode);
-                    if (!instr.identifier.empty()) std::cerr << " id='" << instr.identifier << "'";
-                    if (!instr.operandString.empty()) std::cerr << " operand='" << instr.operandString << "'";
-                    if (instr.fieldTarget.has_value()) std::cerr << " field='" << instr.fieldTarget->name << "'";
-                    if (instr.callTarget.has_value()) std::cerr << " call='" << instr.callTarget->name << "'";
-                    std::cerr << std::endl;
+                    // if (!instr.identifier.empty()) std::cerr << " id='" << instr.identifier << "'";
+                    // if (!instr.operandString.empty()) std::cerr << " operand='" << instr.operandString << "'";
+                    // if (instr.fieldTarget.has_value()) std::cerr << " field='" << instr.fieldTarget->name << "'";
+                    // if (instr.callTarget.has_value()) std::cerr << " call='" << instr.callTarget->name << "'";
+                    // std::cerr << std::endl;
                 }
                 method->SetInstructions(std::move(instructions));
             }

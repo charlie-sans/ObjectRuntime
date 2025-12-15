@@ -614,7 +614,7 @@ json IRTextParser::Parser::ParseMethod()
                     operand["value"] = args[0];
                     operand["type"] = "string";
                     hasOperand = true;
-                    std::cerr << "    ldstr operand: value=" << args[0] << std::endl;
+                    // std::cerr << "    ldstr operand: value=" << args[0] << std::endl;
                 }
                 else if ((instructionName == "ldc" || instructionName == "ldc.i4" || instructionName == "ldc.i8") && !args.empty())
                 {
@@ -659,13 +659,13 @@ json IRTextParser::Parser::ParseMethod()
                     // Generic operand for instructions with arguments
                     operand["arguments"] = args;
                     hasOperand = true;
-                    std::cerr << "    generic operand with " << args.size() << " arguments" << std::endl;
+                    // std::cerr << "    generic operand with " << args.size() << " arguments" << std::endl;
                 }
 
                 if (hasOperand)
                 {
                     instruction["operand"] = operand;
-                    std::cerr << "    operand JSON: " << operand.dump() << std::endl;
+                    // std::cerr << "    operand JSON: " << operand.dump() << std::endl;
                 }
 
                 bodyInstructions.push_back(instruction);

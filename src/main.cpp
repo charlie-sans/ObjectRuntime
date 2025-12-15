@@ -92,11 +92,11 @@ int main(int argc, char* argv[]) {
         try {
             entryClass = vm->GetClass(className);
         } catch (const std::runtime_error& e) {
-            std::cout << "Debug: Could not find class '" << className << "': " << e.what() << std::endl;
+            // std::cout << "Debug: Could not find class '" << className << "': " << e.what() << std::endl;
             
             // Class not found - try fallback if using default entry point
             if (entryPoint == "Main.Main") {
-                std::cout << "Note: Main.Main not found, searching for Program.Main in any namespace..." << std::endl;
+                // std::cout << "Note: Main.Main not found, searching for Program.Main in any namespace..." << std::endl;
                 try {
                     entryClass = vm->GetClass("Program");
                     if (entryClass) {
@@ -139,7 +139,7 @@ int main(int argc, char* argv[]) {
             } else if (result.IsFloat64()) {
                 std::cout << "Result: " << result.AsFloat64() << std::endl;
             } else if (result.IsNull()) {
-                std::cout << "Method executed successfully (void return)" << std::endl;
+                // std::cout << "Method executed successfully (void return)" << std::endl;
             } else if (!result.IsNull()) {
                 std::cout << "Result: [Object]" << std::endl;
             }
