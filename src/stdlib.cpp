@@ -2,7 +2,7 @@
 #include "math_stubs.hpp"
 #include "io_stubs.hpp"
 #include "collections_stubs.hpp"
-#include "raylib/raylib-cpp.hpp"
+
 #include <iostream>
 #include <string>
 #include <sstream>
