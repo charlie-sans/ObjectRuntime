@@ -93,7 +93,7 @@ void IRLoader::LoadTypeDefinition(std::shared_ptr<VirtualMachine> vm, const json
     std::string kind = typeJson["kind"];
     // Convert to lowercase for case-insensitive comparison
     std::transform(kind.begin(), kind.end(), kind.begin(), ::tolower);
-    
+
     if (kind == "class") {
         LoadClass(vm, typeJson);
     } else if (kind == "interface") {
@@ -149,7 +149,7 @@ void IRLoader::LoadFields(ClassRef classRef, const json& fieldsArray, std::share
         std::string name = fieldJson["name"];
         std::string typeStr = fieldJson["type"];
         TypeReference typeRef = ParseTypeReference(vm, typeStr);
-        
+
         auto field = std::make_shared<Field>(name, typeRef);
         classRef->AddField(field);
     }
@@ -210,15 +210,15 @@ void IRLoader::LoadMethods(ClassRef classRef, const json& methodsArray, std::sha
             int instrCount = 0;
             for (const auto& instrJson : methodJson["instructions"]) {
                 try {
-                    std::cerr << "  [" << name << "] Parsing instruction " << instrCount << ": " 
-                              << instrJson.dump() << std::endl;
+                    // std::cerr << "  [" << name << "] Parsing instruction " << instrCount << ": "
+                    //           << instrJson.dump() << std::endl;
                     Instruction instr = InstructionExecutor::ParseJsonInstruction(instrJson);
                     instructions.push_back(instr);
-                    std::cerr << "  [" << name << "] ✓ Instruction " << instrCount << " parsed successfully" << std::endl;
+                    // std::cerr << "  [" << name << "] ✓ Instruction " << instrCount << " parsed successfully" << std::endl;
                 } catch (const std::exception& e) {
                     // If instruction parsing fails, log but continue
                     // The method will have partial instructions rather than failing completely
-                    std::cerr << "ERROR [" << name << "] Failed to parse instruction " << instrCount 
+                    std::cerr << "ERROR [" << name << "] Failed to parse instruction " << instrCount
                               << ": " << e.what() << std::endl;
                     std::cerr << "  Instruction JSON: " << instrJson.dump() << std::endl;
                     std::cerr << "  Instruction type: " << instrJson.type_name() << std::endl;
@@ -226,11 +226,11 @@ void IRLoader::LoadMethods(ClassRef classRef, const json& methodsArray, std::sha
                 instrCount++;
             }
             if (!instructions.empty()) {
-                std::cerr << "[" << name << "] Setting " << instructions.size() << " instructions on method" << std::endl;
+                // std::cerr << "[" << name << "] Setting " << instructions.size() << " instructions on method" << std::endl;
                 // Debug: Print a summary of parsed instruction operands
                 for (size_t i = 0; i < instructions.size(); ++i) {
                     const auto& instr = instructions[i];
-                    std::cerr << "  [" << name << "] Parsed instr " << i << ": op=" << static_cast<int>(instr.opCode);
+                    // std::cerr << "  [" << name << "] Parsed instr " << i << ": op=" << static_cast<int>(instr.opCode);
                     if (!instr.identifier.empty()) std::cerr << " id='" << instr.identifier << "'";
                     if (!instr.operandString.empty()) std::cerr << " operand='" << instr.operandString << "'";
                     if (instr.fieldTarget.has_value()) std::cerr << " field='" << instr.fieldTarget->name << "'";

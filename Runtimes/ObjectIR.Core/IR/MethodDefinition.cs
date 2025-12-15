@@ -127,7 +127,13 @@ public sealed class MethodReference
     public TypeReference ReturnType { get; }
     public List<TypeReference> ParameterTypes { get; }
     public List<TypeReference> GenericArguments { get; } = new();
-
+    /// <summary>
+    /// defines a method reference
+    /// </summary>
+    /// <param name="declaringType">the primary type</param>
+    /// <param name="name">the name of the function</param>
+    /// <param name="returnType">it's return type, eg int32</param>
+    /// <param name="parameterTypes">a list of types used for it's input</param>
     public MethodReference(TypeReference declaringType, string name, TypeReference returnType, List<TypeReference> parameterTypes)
     {
         DeclaringType = declaringType;

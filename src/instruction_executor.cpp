@@ -809,9 +809,9 @@ Value InstructionExecutor::ExecuteInstructions(
     size_t ip = 0;
     while (ip < instructions.size()) {
         const auto& instr = instructions[ip];
-        std::cerr << "[" << (context->GetMethod() ? context->GetMethod()->GetName() : std::string("<static>"))
-                  << "] Executing instruction " << ip << ": op=" << static_cast<int>(instr.opCode)
-                  << ", id='" << instr.identifier << "', operand='" << instr.operandString << "'" << std::endl;
+        // std::cerr << "[" << (context->GetMethod() ? context->GetMethod()->GetName() : std::string("<static>"))
+        //           << "] Executing instruction " << ip << ": op=" << static_cast<int>(instr.opCode)
+        //           << ", id='" << instr.identifier << "', operand='" << instr.operandString << "'" << std::endl;
 
         if (instr.opCode == OpCode::Ret) {
             try {

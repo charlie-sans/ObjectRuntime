@@ -556,7 +556,7 @@ json IRTextParser::Parser::ParseMethod()
                 // Map this label to the current instruction index
                 size_t nextInstructionIndex = bodyInstructions.size();
                 labelMap[labelName] = nextInstructionIndex;
-                std::cerr << "    Parsed label: " << labelName << " -> instruction " << nextInstructionIndex << std::endl;
+                // std::cerr << "    Parsed label: " << labelName << " -> instruction " << nextInstructionIndex << std::endl;
             }
             else if (Check(Token::Type::Instruction))
             {
@@ -578,12 +578,12 @@ json IRTextParser::Parser::ParseMethod()
                     Advance();
                 }
 
-                std::cerr << "  Parsed instruction: " << instructionName << " with " << args.size() << " arguments";
-                for (size_t i = 0; i < args.size(); ++i)
-                {
-                    std::cerr << " [" << i << "]=" << args[i];
-                }
-                std::cerr << std::endl;
+                // std::cerr << "  Parsed instruction: " << instructionName << " with " << args.size() << " arguments";
+                // for (size_t i = 0; i < args.size(); ++i)
+                // {
+                //     std::cerr << " [" << i << "]=" << args[i];
+                // }
+                // std::cerr << std::endl;
 
                 // Build operand based on instruction type and arguments
                 json operand = json::object();
@@ -634,7 +634,7 @@ json IRTextParser::Parser::ParseMethod()
                     json methodObj = parseMethodReference(args);
                     operand["method"] = methodObj;
                     hasOperand = true;
-                    std::cerr << "    call operand: method=" << methodObj.dump() << std::endl;
+                    // std::cerr << "    call operand: method=" << methodObj.dump() << std::endl;
                 }
                 else if ((instructionName == "ldfld" || instructionName == "stfld") && !args.empty())
                 {
@@ -781,14 +781,14 @@ json IRTextParser::ParseToJson(const std::string& irText)
     }
     tokens.push_back(token); // Add EOF token
 
-    std::cerr << "[IRTextParser] Generated " << tokens.size() << " tokens" << std::endl;
+    // std::cerr << "[IRTextParser] Generated " << tokens.size() << " tokens" << std::endl;
 
     // Parse
     Parser parser(tokens);
     json result = parser.ParseModule();
 
-    std::cerr << "[IRTextParser] Generated JSON module:" << std::endl;
-    std::cerr << result.dump(2) << std::endl;
+    // std::cerr << "[IRTextParser] Generated JSON module:" << std::endl;
+    // std::cerr << result.dump(2) << std::endl;
 
     return result;
 }
@@ -804,7 +804,6 @@ std::vector<uint8_t> IRTextParser::ParseToFOB(const std::string& irText)
 
     // TODO: Implement proper FOB serialization
     // For now, return a minimal FOB header + JSON data
-    // This is not true FOB format but allows the pipeline to work
 
     std::vector<uint8_t> fobData;
 

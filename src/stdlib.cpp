@@ -2,9 +2,12 @@
 #include "math_stubs.hpp"
 #include "io_stubs.hpp"
 #include "collections_stubs.hpp"
+#include "raylib/raylib-cpp.hpp"
 #include <iostream>
 #include <string>
 #include <sstream>
+
+
 
 namespace ObjectIR {
 
@@ -1966,6 +1969,54 @@ void RegisterCollectionsLibrary(std::shared_ptr<VirtualMachine> vm) {
     vm->RegisterClass(hashSetClass);
 }
 
+Value maybeWindowShouldClose(ObjectRef thisPtr, const std::vector<Value>& args, VirtualMachine* vm) {
+
+    return Value();
+}
+
+
+void RegisterGUILibrary(std::shared_ptr<VirtualMachine> vm) {
+    auto RaylibClass = std::make_shared<Class>("System.GUI");
+    RaylibClass->SetNamespace("System");
+    RaylibClass->SetAbstract(true);
+
+    auto windowShouldClose = std::make_shared<Method>("WindowShouldClose",TypeReference::Bool() ,true,false);
+    // windowShouldClose->SetNativeImpl(maybeWindowShouldClose);
+
+}
+
+// Reflection Methods
+
+Value GetAllMethodNames(ObjectRef thisPtr, const std::vector<Value>& args, VirtualMachine* vm) {
+    auto ClassNames = vm->GetAllClassNames();
+    auto MethodNameList = vm->CreateArray(TypeReference::String(),ClassNames.size());
+    return Value(MethodNameList);
+}
+
+// Value GetAllMethods(ObjectRef thisPtr, const std::vector<Value>& args, VirtualMachine* vm) {
+// }
+
+// Value GetAllMethods(ObjectRef thisPtr, const std::vector<Value>& args, VirtualMachine* vm) {
+// }
+
+// Value GetAllMethods(ObjectRef thisPtr, const std::vector<Value>& args, VirtualMachine* vm) {
+// }
+
+// Value GetAllMethods(ObjectRef thisPtr, const std::vector<Value>& args, VirtualMachine* vm) {
+// }
+
+void RegisterReflectionLibrary(std::shared_ptr<VirtualMachine> vm)
+{
+    auto OR = std::make_shared<Class>("ObjectIR.Reflection");
+    OR->SetNamespace("ObjectIR");
+    OR->SetAbstract(true);
+    
+    auto GAMN = std::make_shared<Method>("GetAllMethodNames",TypeReference::Object(), false,false);
+    GAMN->SetNativeImpl(GetAllMethodNames);
+    OR->AddMethod(GAMN);
+}
+
+
 void RegisterStandardLibrary(std::shared_ptr<VirtualMachine> vm) {
     // Create System.Console class
     auto consoleClass = std::make_shared<Class>("System.Console");
@@ -2060,6 +2111,11 @@ void RegisterStandardLibrary(std::shared_ptr<VirtualMachine> vm) {
     stringClassLower->AddMethod(isNullOrEmpty);
     vm->RegisterClass(stringClassLower);
     
+    auto StringLength = std::make_shared<Method>("Length", TypeReference::Int32(),true,false);
+    StringLength->AddParameter("value", TypeReference::String());
+    StringLength->SetNativeImpl(String_Length);
+    stringClass->AddMethod(StringLength);
+
     // Create System.Convert class
     auto convertClass = std::make_shared<Class>("System.Convert");
     convertClass->SetNamespace("System");
@@ -2129,6 +2185,9 @@ void RegisterStandardLibrary(std::shared_ptr<VirtualMachine> vm) {
     
     // Register System.Collections.Generic library
     RegisterCollectionsLibrary(vm);
+
+    RegisterGUILibrary(vm);
+    RegisterReflectionLibrary(vm);
 }
 
 } // namespace ObjectIR

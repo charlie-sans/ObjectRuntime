@@ -4,7 +4,7 @@ project(ObjectIR.CppRuntime VERSION 1.0.0 LANGUAGES CXX)
 # Set C++ standard
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
-set(BUILD_GUI ON)
+set(BUILD_GUI OFF)
 # Find nlohmann/json - try system first, then fetch
 find_package(nlohmann_json QUIET)
 if(NOT nlohmann_json_FOUND)
@@ -52,7 +52,7 @@ target_include_directories(objectir_runtime PUBLIC
 
 # Link nlohmann/json
 target_link_libraries(objectir_runtime PUBLIC nlohmann_json::nlohmann_json)
-
+# target_link_options(objectir_runtime PUBLIC "-lraylib")
 if(OBJECTIR_RUNTIME_LINKAGE STREQUAL "STATIC")
     # For static runtime builds, instruct the compiler to not use dllexport/dllimport
     target_compile_definitions(objectir_runtime PUBLIC OBJECTIR_RUNTIME_STATIC)
@@ -75,7 +75,7 @@ set_target_properties(objectir_runtime PROPERTIES
 # runtime library to /MT if a fully static CRT is desired.
 
 # Build standalone executable if enabled
-if(BUILD_STANDALONE)
+
     add_executable(OJRuntime src/main.cpp)
     target_link_libraries(OJRuntime PRIVATE objectir_runtime)
     target_include_directories(OJRuntime PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
@@ -90,7 +90,6 @@ if(BUILD_STANDALONE)
                 MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
         endif()
     endif()
-endif()
 
 # Option to build GUI frontend
 option(BUILD_GUI "Build ObjectIR GUI frontend with Qt" OFF)

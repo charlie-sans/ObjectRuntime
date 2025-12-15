@@ -59,33 +59,33 @@ int main(int argc, char* argv[]) {
             return 1;
         }
         
-        // Print all classes and methods in the loaded module
-        std::cout << "\n=== Module Introspection ===" << std::endl;
-        std::cout << "Classes and Methods in the module:" << std::endl;
-        for (const auto& className : vm->GetAllClassNames()) {
-            ClassRef classRef = vm->GetClass(className);
-            // if it contains System, skip printing
-            if (className.find("System") != std::string::npos) {
-                continue;
-            }
-            std::cout << "Class: " << className << std::endl;
-            for (const auto& method : classRef->GetAllMethods()) {
-                std::cout << "  Method: " << method->GetName() 
-                          << " (Return type: " << method->GetReturnType().ToString() 
-                          << ", Static: " << (method->IsStatic() ? "yes" : "no") << ")" << std::endl;
+        // // Print all classes and methods in the loaded module
+        // std::cout << "\n=== Module Introspection ===" << std::endl;
+        // std::cout << "Classes and Methods in the module:" << std::endl;
+        // for (const auto& className : vm->GetAllClassNames()) {
+        //     ClassRef classRef = vm->GetClass(className);
+        //     // if it contains System, skip printing
+        //     if (className.find("System") != std::string::npos) {
+        //         continue;
+        //     }
+        //     std::cout << "Class: " << className << std::endl;
+        //     for (const auto& method : classRef->GetAllMethods()) {
+        //         std::cout << "  Method: " << method->GetName() 
+        //                   << " (Return type: " << method->GetReturnType().ToString() 
+        //                   << ", Static: " << (method->IsStatic() ? "yes" : "no") << ")" << std::endl;
                 
-                // Print parameters if any
-                const auto& params = method->GetParameters();
-                if (!params.empty()) {
-                    std::cout << "    Parameters:" << std::endl;
-                    for (const auto& param : params) {
-                        std::cout << "      " << param.first << ": " << param.second.ToString() << std::endl;
-                    }
-                }
-            }
-            std::cout << std::endl;
-        }
-        std::cout << "=== End Introspection ===\n" << std::endl;
+        //         // Print parameters if any
+        //         const auto& params = method->GetParameters();
+        //         if (!params.empty()) {
+        //             std::cout << "    Parameters:" << std::endl;
+        //             for (const auto& param : params) {
+        //                 std::cout << "      " << param.first << ": " << param.second.ToString() << std::endl;
+        //             }
+        //         }
+        //     }
+        //     std::cout << std::endl;
+        // }
+        // std::cout << "=== End Introspection ===\n" << std::endl;
 
         // Find the entry class
         ClassRef entryClass = nullptr;
