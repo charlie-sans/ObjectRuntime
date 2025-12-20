@@ -5,6 +5,7 @@
 #include <fstream>
 #include <vector>
 #include <string>
+#include <cstdlib>
 
 using namespace ObjectIR;
 
@@ -57,6 +58,13 @@ int main(int argc, char* argv[]) {
         if (!vm) {
             std::cerr << "Failed to load module from: " << modulePath << std::endl;
             return 1;
+        }
+
+        if (const char* pluginPath = std::getenv("OBJECTIR_PLUGIN")) {
+            if (std::string(pluginPath).size() > 0) {
+                std::cout << "Loading plugin: " << pluginPath << std::endl;
+                vm->LoadPlugin(pluginPath);
+            }
         }
         
         // // Print all classes and methods in the loaded module

@@ -1,12 +1,46 @@
 #include "objectir_runtime.hpp"
 #include "instruction_executor.hpp"
+#include "objectir_plugin.hpp"
+#include "objectir_plugin_api.h"
+#include "objectir_type_names.hpp"
 #include <algorithm>
 #include <stdexcept>
 #include <unordered_set>
+#include <vector>
+
+#if defined(_WIN32)
+    #include <windows.h>
+#else
+    #include <dlfcn.h>
+#endif
 
 namespace ObjectIR {
 
 namespace {
+
+static void* ResolvePluginSymbol(
+#if defined(_WIN32)
+    HMODULE lib,
+#else
+    void* lib,
+#endif
+    const char* name
+) {
+#if defined(_WIN32)
+    return reinterpret_cast<void*>(GetProcAddress(lib, name));
+#else
+    return dlsym(lib, name);
+#endif
+}
+
+static std::string PluginLoaderError() {
+#if defined(_WIN32)
+    return "dynamic loader error";
+#else
+    const char* err = dlerror();
+    return err ? std::string(err) : std::string();
+#endif
+}
 
 std::string OpCodeToString(OpCode op) {
     switch (op) {
@@ -202,6 +236,16 @@ std::string QualifiedName(const ClassRef& cls) {
 }
 
 } // namespace
+
+struct VirtualMachine::LoadedPlugin {
+#if defined(_WIN32)
+    HMODULE handle = nullptr;
+#else
+    void* handle = nullptr;
+#endif
+    PluginShutdownFn shutdown = nullptr;
+    std::string path;
+};
 
 // ============================================================================
 // TypeReference Implementation
@@ -621,17 +665,182 @@ void ExecutionContext::SetArgument(const std::string& name, const Value& value) 
 
 VirtualMachine::VirtualMachine() = default;
 
-void VirtualMachine::RegisterClass(ClassRef classType) {
-    // Register by simple name
-    _classes[classType->GetName()] = classType;
-    
-    // Also register by qualified name (namespace.name) if namespace is set
-    if (!classType->GetNamespace().empty()) {
-        std::string qualifiedName = classType->GetNamespace() + "." + classType->GetName();
-        _classes[qualifiedName] = classType;
-    }
+VirtualMachine::~VirtualMachine() {
+    UnloadAllPlugins();
 }
 
+bool VirtualMachine::LoadPlugin(const std::string& path) {
+    if (path.empty()) {
+        throw std::runtime_error("Plugin path is empty");
+    }
+
+#if defined(_WIN32)
+    HMODULE lib = LoadLibraryA(path.c_str());
+    if (!lib) {
+        throw std::runtime_error("Failed to load plugin library: " + path);
+    }
+#else
+    dlerror();
+    void* lib = dlopen(path.c_str(), RTLD_NOW);
+    if (!lib) {
+        throw std::runtime_error("Failed to load plugin library: " + path + " (" + PluginLoaderError() + ")");
+    }
+#endif
+
+    // Optional: ABI compatibility handshake.
+    // If the plugin exports ObjectIR_PluginGetInfo, validate the requested range before calling init.
+    if (auto infoSym = ResolvePluginSymbol(lib, "ObjectIR_PluginGetInfo")) {
+        using GetInfoFn = int32_t (*)(ObjectIR_PluginInfoV1* outInfo);
+        auto getInfo = reinterpret_cast<GetInfoFn>(infoSym);
+
+        ObjectIR_PluginInfoV1 info{};
+        info.structSize = sizeof(ObjectIR_PluginInfoV1);
+
+        int32_t okInfo = 0;
+        try {
+            okInfo = getInfo(&info);
+        } catch (...) {
+            okInfo = 0;
+        }
+
+        if (!okInfo) {
+#if defined(_WIN32)
+            FreeLibrary(lib);
+#else
+            dlclose(lib);
+#endif
+            throw std::runtime_error("Plugin ObjectIR_PluginGetInfo failed: " + path);
+        }
+
+        const uint32_t runtimeAbi = OBJECTIR_PLUGIN_ABI_VERSION_PACKED;
+        if (info.abiMinPacked && runtimeAbi < info.abiMinPacked) {
+#if defined(_WIN32)
+            FreeLibrary(lib);
+#else
+            dlclose(lib);
+#endif
+            throw std::runtime_error("Plugin requires newer plugin ABI than runtime provides: " + path);
+        }
+        if (info.abiMaxPacked && runtimeAbi > info.abiMaxPacked) {
+#if defined(_WIN32)
+            FreeLibrary(lib);
+#else
+            dlclose(lib);
+#endif
+            throw std::runtime_error("Plugin requires older plugin ABI than runtime provides: " + path);
+        }
+    }
+
+    auto initSym = ResolvePluginSymbol(lib, "ObjectIR_PluginInit");
+    if (!initSym) {
+#if defined(_WIN32)
+        FreeLibrary(lib);
+#else
+        dlclose(lib);
+#endif
+        throw std::runtime_error("Plugin missing required entry point ObjectIR_PluginInit: " + path);
+    }
+
+    auto init = reinterpret_cast<PluginInitFn>(initSym);
+    bool ok = false;
+    try {
+        ok = init(this);
+    } catch (const std::exception& ex) {
+#if defined(_WIN32)
+        FreeLibrary(lib);
+#else
+        dlclose(lib);
+#endif
+        throw std::runtime_error(std::string("Plugin init threw: ") + ex.what());
+    } catch (...) {
+#if defined(_WIN32)
+        FreeLibrary(lib);
+#else
+        dlclose(lib);
+#endif
+        throw std::runtime_error("Plugin init threw unknown exception");
+    }
+
+    if (!ok) {
+#if defined(_WIN32)
+        FreeLibrary(lib);
+#else
+        dlclose(lib);
+#endif
+        throw std::runtime_error("Plugin init returned false: " + path);
+    }
+
+    PluginShutdownFn shutdown = nullptr;
+    if (auto shutdownSym = ResolvePluginSymbol(lib, "ObjectIR_PluginShutdown")) {
+        shutdown = reinterpret_cast<PluginShutdownFn>(shutdownSym);
+    }
+
+    auto p = std::make_unique<LoadedPlugin>();
+    p->handle = lib;
+    p->shutdown = shutdown;
+    p->path = path;
+    _plugins.push_back(std::move(p));
+    return true;
+}
+
+void VirtualMachine::UnloadAllPlugins() {
+    for (auto it = _plugins.rbegin(); it != _plugins.rend(); ++it) {
+        auto& p = *it;
+        if (!p) continue;
+
+        if (p->shutdown) {
+            try {
+                p->shutdown(this);
+            } catch (...) {
+                // Best-effort shutdown.
+            }
+        }
+
+#if defined(_WIN32)
+        if (p->handle) FreeLibrary(p->handle);
+#else
+        if (p->handle) dlclose(p->handle);
+#endif
+        p->handle = nullptr;
+    }
+    _plugins.clear();
+}
+
+std::vector<std::string> VirtualMachine::GetLoadedPluginPaths() const {
+    std::vector<std::string> paths;
+    paths.reserve(_plugins.size());
+    for (const auto& p : _plugins) {
+        if (p) paths.push_back(p->path);
+    }
+    return paths;
+}
+
+void VirtualMachine::RegisterClass(ClassRef classType) {
+    if (!classType) return;
+
+    const std::string& rawName = classType->GetName();
+    const auto lastDot = rawName.find_last_of('.');
+    const std::string simpleName = (lastDot == std::string::npos) ? rawName : rawName.substr(lastDot + 1);
+    const std::string qualifiedFromFields = TypeNames::GetQualifiedClassName(classType);
+
+    // Register multiple keys for legacy compatibility.
+    // - simpleName: for code that references "Program"
+    // - rawName: for code that stored fully-qualified names in Class::name
+    // - qualifiedFromFields: canonical (namespace + simpleName)
+    if (!simpleName.empty()) {
+        _classes[simpleName] = classType;
+    }
+    if (!rawName.empty()) {
+        _classes[rawName] = classType;
+    }
+    if (!qualifiedFromFields.empty()) {
+        _classes[qualifiedFromFields] = classType;
+    }
+}
+/// @brief Retrieves a class reference by its name, supporting both simple and qualified names.
+/// @param name The name of the class to retrieve.
+/// @return A reference to the class.
+/// @throws std::runtime_error if the class is not found.
 ClassRef VirtualMachine::GetClass(const std::string& name) const {
     auto it = _classes.find(name);
     if (it != _classes.end()) {
@@ -711,6 +920,195 @@ Value VirtualMachine::InvokeMethod(ObjectRef object, const std::string& methodNa
     throw std::runtime_error("Method has no implementation: " + methodName);
 }
 
+namespace {
+
+std::string FormatMethodSignature(const ObjectIR::MethodRef& method) {
+    if (!method) return "<null>";
+    std::string sig = method->GetName();
+    sig.push_back('(');
+    const auto& params = method->GetParameters();
+    for (size_t i = 0; i < params.size(); ++i) {
+        if (i) sig += ", ";
+        sig += ObjectIR::TypeNames::CanonicalTypeName(params[i].second);
+    }
+    sig.push_back(')');
+    sig += " -> ";
+    sig += ObjectIR::TypeNames::CanonicalTypeName(method->GetReturnType());
+    return sig;
+}
+
+std::vector<ObjectIR::MethodRef> CollectMethodsByName(ObjectIR::ClassRef cls, const std::string& name) {
+    std::vector<ObjectIR::MethodRef> matches;
+    for (auto current = cls; current; current = current->GetBaseClass()) {
+        for (const auto& method : current->GetAllMethods()) {
+            if (method && method->GetName() == name) {
+                matches.push_back(method);
+            }
+        }
+    }
+    return matches;
+}
+
+bool TypeNameMatchesParameter(const std::string& requestedType,
+                             const ObjectIR::TypeReference& parameterType) {
+    const auto requestedNorm = ObjectIR::TypeNames::NormalizeTypeName(requestedType);
+    const auto paramCanon = ObjectIR::TypeNames::CanonicalTypeName(parameterType);
+    if (requestedNorm == paramCanon) return true;
+
+    // Legacy fallback: allow simple-name match when request is unqualified.
+    if (requestedNorm.find('.') == std::string::npos) {
+        const auto dot = paramCanon.find_last_of('.');
+        const auto paramSimple = (dot == std::string::npos) ? paramCanon : paramCanon.substr(dot + 1);
+        return requestedNorm == paramSimple;
+    }
+
+    return false;
+}
+
+ObjectIR::MethodRef ResolveOverloadOrThrow(ObjectIR::ClassRef cls,
+                                          const ObjectIR::CallTarget& target,
+                                          bool requireStatic) {
+    if (!cls) {
+        throw std::runtime_error("Null class when resolving method: " + target.name);
+    }
+
+    const auto methods = CollectMethodsByName(cls, target.name);
+    if (methods.empty()) {
+        throw std::runtime_error("Method not found: " + target.name);
+    }
+
+    // If no parameter types provided, only allow resolution when unambiguous.
+    if (target.parameterTypes.empty()) {
+        std::vector<ObjectIR::MethodRef> viable;
+        for (const auto& m : methods) {
+            if (!m) continue;
+            if (requireStatic && !m->IsStatic()) continue;
+            viable.push_back(m);
+        }
+        if (viable.size() == 1) return viable[0];
+
+        std::string msg = "Ambiguous overload for '" + target.name + "'. Provide parameterTypes. Candidates:";
+        for (const auto& m : viable) {
+            msg += "\n  - ";
+            msg += FormatMethodSignature(m);
+        }
+        throw std::runtime_error(msg);
+    }
+
+    const auto requestedParams = ObjectIR::TypeNames::NormalizeTypeNames(target.parameterTypes);
+
+    // Exact signature match (arity + per-parameter type name).
+    std::vector<ObjectIR::MethodRef> exact;
+    exact.reserve(methods.size());
+    for (const auto& m : methods) {
+        if (!m) continue;
+        if (requireStatic && !m->IsStatic()) continue;
+
+        const auto& params = m->GetParameters();
+        if (params.size() != requestedParams.size()) continue;
+
+        bool ok = true;
+        for (size_t i = 0; i < params.size(); ++i) {
+            if (!TypeNameMatchesParameter(requestedParams[i], params[i].second)) {
+                ok = false;
+                break;
+            }
+        }
+        if (ok) {
+            exact.push_back(m);
+        }
+    }
+
+    if (exact.size() == 1) {
+        return exact[0];
+    }
+    if (exact.size() > 1) {
+        std::string msg = "Ambiguous overload for '" + target.name + "' with provided signature. Candidates:";
+        for (const auto& m : exact) {
+            msg += "\n  - ";
+            msg += FormatMethodSignature(m);
+        }
+        throw std::runtime_error(msg);
+    }
+
+    // Legacy fallback: if exactly one overload matches arity, choose it.
+    std::vector<ObjectIR::MethodRef> arity;
+    for (const auto& m : methods) {
+        if (!m) continue;
+        if (requireStatic && !m->IsStatic()) continue;
+        if (m->GetParameters().size() == requestedParams.size()) {
+            arity.push_back(m);
+        }
+    }
+    if (arity.size() == 1) {
+        return arity[0];
+    }
+
+    std::string msg = "No matching overload for '" + target.name + "'. Candidates:";
+    for (const auto& m : methods) {
+        if (!m) continue;
+        if (requireStatic && !m->IsStatic()) continue;
+        msg += "\n  - ";
+        msg += FormatMethodSignature(m);
+    }
+    throw std::runtime_error(msg);
+}
+
+} // namespace
+
+Value VirtualMachine::InvokeMethod(ObjectRef object, const CallTarget& target, const std::vector<Value>& args) {
+    if (!object || !object->GetClass()) {
+        throw std::runtime_error("Cannot invoke method on null object");
+    }
+
+    auto method = ResolveOverloadOrThrow(object->GetClass(), target, /*requireStatic*/false);
+
+    auto impl = method->GetNativeImpl();
+    if (impl) {
+        return impl(object, args, this);
+    }
+
+    if (method->HasInstructions()) {
+        auto context = std::make_unique<ExecutionContext>(method);
+        context->SetThis(object);
+        context->SetArguments(args);
+        auto* rawContext = context.get();
+        PushContext(std::move(context));
+        auto result = InstructionExecutor::ExecuteInstructions(method->GetInstructions(), object, args, rawContext, this, method->GetLabelMap());
+        PopContext();
+        if (method->GetReturnType().IsPrimitive() && method->GetReturnType().GetPrimitiveType() == PrimitiveType::Void) {
+            return Value();
+        }
+        return result;
+    }
+
+    throw std::runtime_error("Method has no implementation: " + target.name);
+}
+
+Value VirtualMachine::InvokeStaticMethod(ClassRef classType, const CallTarget& target, const std::vector<Value>& args) {
+    auto method = ResolveOverloadOrThrow(classType, target, /*requireStatic*/true);
+
+    auto impl = method->GetNativeImpl();
+    if (impl) {
+        return impl(nullptr, args, this);
+    }
+
+    if (method->HasInstructions()) {
+        auto context = std::make_unique<ExecutionContext>(method);
+        context->SetArguments(args);
+        auto* rawContext = context.get();
+        PushContext(std::move(context));
+        auto result = InstructionExecutor::ExecuteInstructions(method->GetInstructions(), nullptr, args, rawContext, this, method->GetLabelMap());
+        PopContext();
+        if (method->GetReturnType().IsPrimitive() && method->GetReturnType().GetPrimitiveType() == PrimitiveType::Void) {
+            return Value();
+        }
+        return result;
+    }
+
+    throw std::runtime_error("Method has no implementation: " + target.name);
+}
+
 Value VirtualMachine::InvokeStaticMethod(ClassRef classType, const std::string& methodName, const std::vector<Value>& args) {
     auto method = classType->LookupMethod(methodName);
     if (!method) {
@@ -758,6 +1156,7 @@ json VirtualMachine::ExportClassMetadata(const std::string& name, bool includeIn
     json type;
     type["name"] = classRef->GetName();
     type["namespace"] = classRef->GetNamespace();
+    type["fullName"] = TypeNames::GetQualifiedClassName(classRef);
     type["kind"] = "class";
     type["isAbstract"] = classRef->IsAbstract();
     type["isSealed"] = classRef->IsSealed();
@@ -766,7 +1165,7 @@ json VirtualMachine::ExportClassMetadata(const std::string& name, bool includeIn
     for (const auto& field : classRef->GetAllFields()) {
         json f;
         f["name"] = field->GetName();
-        f["type"] = field->GetType().ToString();
+        f["type"] = TypeNames::CanonicalTypeName(field->GetType());
         fields.push_back(f);
     }
     type["fields"] = fields;
@@ -775,7 +1174,7 @@ json VirtualMachine::ExportClassMetadata(const std::string& name, bool includeIn
     for (const auto& method : classRef->GetAllMethods()) {
         json m;
         m["name"] = method->GetName();
-        m["returnType"] = method->GetReturnType().ToString();
+        m["returnType"] = TypeNames::CanonicalTypeName(method->GetReturnType());
         m["isStatic"] = method->IsStatic();
         m["isVirtual"] = method->IsVirtual();
 
@@ -783,7 +1182,7 @@ json VirtualMachine::ExportClassMetadata(const std::string& name, bool includeIn
         for (const auto& param : method->GetParameters()) {
             json p;
             p["name"] = param.first;
-            p["type"] = param.second.ToString();
+            p["type"] = TypeNames::CanonicalTypeName(param.second);
             params.push_back(p);
         }
         m["parameters"] = params;

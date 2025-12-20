@@ -3,11 +3,62 @@
 #include "instruction_executor.hpp"
 #include "stdlib.hpp"
 #include "ir_text_parser.hpp"
+#include "objectir_type_names.hpp"
 #include <fstream>
 #include <iostream>
+#include <codecvt>
 #include <algorithm>
+#include <locale>
 
 namespace ObjectIR {
+
+namespace {
+
+std::string NormalizeToUtf8(const std::string& content) {
+    if (content.size() >= 3 &&
+        static_cast<unsigned char>(content[0]) == 0xEF &&
+        static_cast<unsigned char>(content[1]) == 0xBB &&
+        static_cast<unsigned char>(content[2]) == 0xBF) {
+        // UTF-8 BOM
+        return content.substr(3);
+    }
+
+    if (content.size() >= 2 &&
+        static_cast<unsigned char>(content[0]) == 0xFF &&
+        static_cast<unsigned char>(content[1]) == 0xFE) {
+        // UTF-16 LE BOM
+        std::u16string u16;
+        u16.reserve((content.size() - 2) / 2);
+        for (size_t i = 2; i + 1 < content.size(); i += 2) {
+            const auto lo = static_cast<unsigned char>(content[i]);
+            const auto hi = static_cast<unsigned char>(content[i + 1]);
+            const char16_t ch = static_cast<char16_t>(lo | (hi << 8));
+            u16.push_back(ch);
+        }
+        std::wstring_convert<std::codecvt_utf8_utf16<char16_t>, char16_t> conv;
+        return conv.to_bytes(u16);
+    }
+
+    if (content.size() >= 2 &&
+        static_cast<unsigned char>(content[0]) == 0xFE &&
+        static_cast<unsigned char>(content[1]) == 0xFF) {
+        // UTF-16 BE BOM
+        std::u16string u16;
+        u16.reserve((content.size() - 2) / 2);
+        for (size_t i = 2; i + 1 < content.size(); i += 2) {
+            const auto hi = static_cast<unsigned char>(content[i]);
+            const auto lo = static_cast<unsigned char>(content[i + 1]);
+            const char16_t ch = static_cast<char16_t>(lo | (hi << 8));
+            u16.push_back(ch);
+        }
+        std::wstring_convert<std::codecvt_utf8_utf16<char16_t>, char16_t> conv;
+        return conv.to_bytes(u16);
+    }
+
+    return content;
+}
+
+} // namespace
 
 std::shared_ptr<VirtualMachine> IRLoader::LoadFromFile(const std::string& filePath) {
     // Auto-detect format
@@ -15,7 +66,7 @@ std::shared_ptr<VirtualMachine> IRLoader::LoadFromFile(const std::string& filePa
         auto result = FOBLoader::LoadFromFile(filePath);
         return result.vm;
     } else {
-        // Prefer textual ObjectIR, fall back to JSON
+        // Prefer textual ObjectIR for .ir, JSON for .json, otherwise best-effort auto-detect.
         std::ifstream file(filePath);
         if (!file.is_open()) {
             throw std::runtime_error("Cannot open IR file: " + filePath);
@@ -23,7 +74,17 @@ std::shared_ptr<VirtualMachine> IRLoader::LoadFromFile(const std::string& filePa
 
         std::stringstream buffer;
         buffer << file.rdbuf();
-        const std::string content = buffer.str();
+        const std::string content = NormalizeToUtf8(buffer.str());
+
+        // Extension-based hinting prevents the text parser from accidentally accepting JSON.
+        std::string lowerPath = filePath;
+        std::transform(lowerPath.begin(), lowerPath.end(), lowerPath.begin(), ::tolower);
+        if (lowerPath.size() >= 5 && lowerPath.rfind(".json") == (lowerPath.size() - 5)) {
+            return LoadFromString(content);
+        }
+        if (lowerPath.size() >= 3 && lowerPath.rfind(".ir") == (lowerPath.size() - 3)) {
+            return LoadFromText(content);
+        }
 
         // Try text IR first
         try {
@@ -246,17 +307,29 @@ void IRLoader::LoadMethods(ClassRef classRef, const json& methodsArray, std::sha
 }
 
 TypeReference IRLoader::ParseTypeReference(std::shared_ptr<VirtualMachine> vm, const std::string& typeStr) {
-    // Handle primitive types
-    if (typeStr == "int32") return TypeReference::Int32();
-    if (typeStr == "int64") return TypeReference::Int64();
-    if (typeStr == "float") return TypeReference::Float32();
-    if (typeStr == "double") return TypeReference::Float64();
-    if (typeStr == "bool") return TypeReference::Bool();
-    if (typeStr == "string") return TypeReference::String();
-    if (typeStr == "void") return TypeReference::Void();
+    const auto normalized = TypeNames::NormalizeTypeName(typeStr);
 
-    // Handle user-defined types - for now, return Object type as fallback
-    // TODO: Look up user-defined types from the VM
+    if (normalized == "int32") return TypeReference::Int32();
+    if (normalized == "int64") return TypeReference::Int64();
+    if (normalized == "float32") return TypeReference::Float32();
+    if (normalized == "float64") return TypeReference::Float64();
+    if (normalized == "bool") return TypeReference::Bool();
+    if (normalized == "string") return TypeReference::String();
+    if (normalized == "void") return TypeReference::Void();
+    if (normalized == "uint8") return TypeReference::UInt8();
+    if (normalized == "object") return TypeReference::Object();
+
+    // User-defined types: best-effort lookup.
+    if (vm) {
+        try {
+            if (vm->HasClass(normalized)) {
+                return TypeReference::Object(vm->GetClass(normalized));
+            }
+        } catch (...) {
+            // Ignore and fall back.
+        }
+    }
+
     return TypeReference::Object();
 }
 

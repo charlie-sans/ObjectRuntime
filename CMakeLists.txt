@@ -1,6 +1,11 @@
 cmake_minimum_required(VERSION 3.16)
 project(ObjectIR.CppRuntime VERSION 1.0.0 LANGUAGES CXX)
 
+# Newer CMake versions dropped compatibility with policies < 3.5.
+# Some third-party projects (like nlohmann/json) still declare older minimums,
+# so we explicitly set the policy baseline to keep FetchContent builds working.
+set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
+
 # Set C++ standard
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -41,6 +46,7 @@ add_library(objectir_runtime ${OBJECTIR_RUNTIME_LINKAGE}
     src/ir_text_parser.cpp
     src/fob_loader.cpp
     src/instruction_executor.cpp
+    src/objectir_plugin_api.cpp
     src/stdlib.cpp
     src/runtime_c_api.cpp
 )
@@ -52,6 +58,10 @@ target_include_directories(objectir_runtime PUBLIC
 
 # Link nlohmann/json
 target_link_libraries(objectir_runtime PUBLIC nlohmann_json::nlohmann_json)
+
+if(UNIX AND NOT APPLE)
+    target_link_libraries(objectir_runtime PRIVATE dl)
+endif()
 # target_link_options(objectir_runtime PUBLIC "-lraylib")
 if(OBJECTIR_RUNTIME_LINKAGE STREQUAL "STATIC")
     # For static runtime builds, instruct the compiler to not use dllexport/dllimport
@@ -92,7 +102,7 @@ set_target_properties(objectir_runtime PROPERTIES
     endif()
 
 # Option to build GUI frontend
-option(BUILD_GUI "Build ObjectIR GUI frontend with Qt" OFF)
+option(BUILD_GUI "Build ObjectIR GUI frontend with Qt" ON)
 
 # Build GUI frontend if enabled and Qt is available
 if(BUILD_GUI)
@@ -135,6 +145,13 @@ target_link_libraries(format_test PRIVATE objectir_runtime)
 
 add_executable(full_feature_suite examples/full_feature_suite.cpp)
 target_link_libraries(full_feature_suite PRIVATE objectir_runtime)
+
+# Example plugin (shared library)
+add_library(objectir_example_override_plugin SHARED
+    plugins/example_override_plugin.cpp
+)
+target_link_libraries(objectir_example_override_plugin PRIVATE objectir_runtime)
+target_include_directories(objectir_example_override_plugin PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
 
 
 # Install configuration

@@ -505,6 +505,7 @@ namespace ObjectIR {
     {
     public:
         VirtualMachine();
+        ~VirtualMachine();
 
         // Output redirection
         void SetOutputFunction(OutputFunction func) { _outputFunction = func; }
@@ -530,9 +531,24 @@ namespace ObjectIR {
         Value InvokeMethod(ObjectRef object, const std::string &methodName, const std::vector<Value> &args);
         Value InvokeStaticMethod(ClassRef classType, const std::string &methodName, const std::vector<Value> &args);
 
+        // Signature-aware invocation (recommended for overloaded methods).
+        Value InvokeMethod(ObjectRef object, const CallTarget& target, const std::vector<Value>& args);
+        Value InvokeStaticMethod(ClassRef classType, const CallTarget& target, const std::vector<Value>& args);
+
         // Reflection/export
         [[nodiscard]] json ExportMetadata(bool includeInstructions = false) const;
         [[nodiscard]] json ExportClassMetadata(const std::string& name, bool includeInstructions = false) const;
+
+        // Plugins
+        // Loads a shared library and calls its `ObjectIR_PluginInit(ObjectIR::VirtualMachine*)` entry point.
+        // Returns true on success; throws std::runtime_error on failure.
+        bool LoadPlugin(const std::string& path);
+
+        // Calls `ObjectIR_PluginShutdown` (if present) and unloads all plugin libraries.
+        void UnloadAllPlugins();
+
+        // Returns the paths of loaded plugins.
+        [[nodiscard]] std::vector<std::string> GetLoadedPluginPaths() const;
 
         // Global state
         [[nodiscard]] ExecutionContext *GetCurrentContext() const { return _currentContext.get(); }
@@ -544,6 +560,9 @@ namespace ObjectIR {
         std::vector<std::unique_ptr<ExecutionContext>> _contextStack;
         std::unique_ptr<ExecutionContext> _currentContext;
         OutputFunction _outputFunction;
+
+        struct LoadedPlugin;
+        std::vector<std::unique_ptr<LoadedPlugin>> _plugins;
     };
 
     // ============================================================================

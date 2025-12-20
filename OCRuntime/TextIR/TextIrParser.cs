@@ -1,0 +1,778 @@
+using System.Text;
+using System.Text.Json;
+using OCRuntime.IR;
+
+namespace OCRuntime.TextIR;
+
+internal static class TextIrParser
+{
+    internal static ModuleDto ParseModule(string text)
+    {
+        var tokens = TextIrLexer.Lex(text);
+        var p = new Parser(tokens);
+        return p.ParseModule();
+    }
+
+    private sealed class Parser
+    {
+        private readonly IReadOnlyList<TextIrToken> _tokens;
+        private int _current;
+
+        public Parser(IReadOnlyList<TextIrToken> tokens)
+        {
+            _tokens = tokens;
+        }
+
+        public ModuleDto ParseModule()
+        {
+            // module Name [version X]
+            ConsumeKeyword("module", "Expected 'module'");
+            var moduleName = ConsumeIdentifier("Expected module name").Value;
+
+            string version = "1.0.0";
+            if (MatchKeyword("version"))
+            {
+                // Accept dotted identifiers/numbers (e.g. 1.0.0)
+                version = ConsumeVersionLike("Expected version after 'version'");
+            }
+
+            var types = new List<TypeDto>();
+
+            while (!IsAtEnd())
+            {
+                if (CheckKeyword("class"))
+                    types.Add(ParseType("class"));
+                else if (CheckKeyword("interface"))
+                    types.Add(ParseType("interface"));
+                else if (CheckKeyword("struct"))
+                    types.Add(ParseType("struct"));
+                else if (CheckKeyword("enum"))
+                    types.Add(ParseType("enum"));
+                else if (Match(TextIrTokenType.Newline) || Match(TextIrTokenType.Eof))
+                    continue;
+                else
+                    Advance();
+            }
+
+            return new ModuleDto
+            {
+                name = moduleName,
+                version = version,
+                metadata = JsonSerializer.SerializeToElement(new { }),
+                functions = JsonSerializer.SerializeToElement(Array.Empty<object>()),
+                types = types.ToArray()
+            };
+        }
+
+        private TypeDto ParseType(string kind)
+        {
+            ConsumeKeyword(kind, $"Expected '{kind}'");
+            var typeName = ConsumeIdentifier($"Expected {kind} name").Value;
+
+            // Optional : BaseOrInterface[, ...] (ignored for now)
+            if (Match(TextIrTokenType.Colon))
+            {
+                while (!Check(TextIrTokenType.LBrace) && !IsAtEnd())
+                    Advance();
+            }
+
+            Consume(TextIrTokenType.LBrace, "Expected '{' to start type body");
+
+            var fields = new List<FieldDto>();
+            var methods = new List<MethodDto>();
+
+            while (!Check(TextIrTokenType.RBrace) && !IsAtEnd())
+            {
+                    // Skip blank lines
+                    if (Match(TextIrTokenType.Newline))
+                        continue;
+
+                    // Collect optional modifiers
+                    string? access = null;
+                    bool isStatic = false;
+                    bool isVirtual = false;
+                    bool isOverride = false;
+                    bool isAbstract = false;
+
+                bool consumedModifier;
+                do
+                {
+                    consumedModifier = false;
+                    if (MatchKeyword("public")) { access = "public"; consumedModifier = true; }
+                    else if (MatchKeyword("private")) { access = "private"; consumedModifier = true; }
+                    else if (MatchKeyword("protected")) { access = "protected"; consumedModifier = true; }
+                    else if (MatchKeyword("internal")) { access = "internal"; consumedModifier = true; }
+                    else if (MatchKeyword("static")) { isStatic = true; consumedModifier = true; }
+                    else if (MatchKeyword("virtual")) { isVirtual = true; consumedModifier = true; }
+                    else if (MatchKeyword("override")) { isOverride = true; consumedModifier = true; }
+                    else if (MatchKeyword("abstract")) { isAbstract = true; consumedModifier = true; }
+                    else if (MatchKeyword("sealed")) { consumedModifier = true; }
+                    else if (Match(TextIrTokenType.Newline)) { consumedModifier = true; }
+                } while (consumedModifier);
+
+                if (CheckKeyword("field"))
+                {
+                    fields.Add(ParseField(access, isStatic));
+                }
+                else if (CheckKeyword("method"))
+                {
+                    methods.Add(ParseMethod(isStatic, isVirtual, isOverride, isAbstract, isConstructor: false, access));
+                }
+                else if (CheckKeyword("constructor"))
+                {
+                    methods.Add(ParseMethod(isStatic: false, isVirtual: false, isOverride: false, isAbstract: false, isConstructor: true, access));
+                }
+                else
+                {
+                    // Skip unknown/member
+                    Advance();
+                }
+            }
+
+            Consume(TextIrTokenType.RBrace, "Expected '}' to end type body");
+
+            return new TypeDto
+            {
+                kind = kind,
+                name = typeName,
+                _namespace = null,
+                access = "public",
+                isAbstract = false,
+                isSealed = false,
+                fields = fields.ToArray(),
+                methods = methods.ToArray(),
+                interfaces = JsonSerializer.SerializeToElement(Array.Empty<object>()),
+                baseInterfaces = JsonSerializer.SerializeToElement(Array.Empty<object>()),
+                genericParameters = JsonSerializer.SerializeToElement(Array.Empty<object>()),
+                properties = JsonSerializer.SerializeToElement(Array.Empty<object>())
+            };
+        }
+
+        private FieldDto ParseField(string? access, bool isStatic)
+        {
+            ConsumeKeyword("field", "Expected 'field'");
+            var name = ConsumeIdentifier("Expected field name").Value;
+            Consume(TextIrTokenType.Colon, "Expected ':' after field name");
+
+            var typeText = ReadTypeTextUntilLineEnd();
+
+            return new FieldDto
+            {
+                name = name,
+                type = typeText,
+                access = access,
+                isStatic = isStatic,
+                isReadOnly = false
+            };
+        }
+
+        private MethodDto ParseMethod(bool isStatic, bool isVirtual, bool isOverride, bool isAbstract, bool isConstructor, string? access)
+        {
+            if (isConstructor)
+            {
+                ConsumeKeyword("constructor", "Expected 'constructor'");
+            }
+            else
+            {
+                ConsumeKeyword("method", "Expected 'method'");
+            }
+
+            string methodName;
+            if (isConstructor)
+            {
+                methodName = "constructor";
+            }
+            else
+            {
+                methodName = ConsumeIdentifier("Expected method name").Value;
+            }
+
+            var parameters = ParseParameters();
+
+            string returnType = "void";
+            if (!isConstructor && Match(TextIrTokenType.Arrow))
+            {
+                returnType = ReadTypeTextUntilLineEnd(stopAtLBrace: true);
+            }
+
+            // Optional: implements Foo.Bar
+            if (MatchKeyword("implements"))
+            {
+                while (!Check(TextIrTokenType.LBrace) && !Check(TextIrTokenType.Newline) && !IsAtEnd())
+                    Advance();
+            }
+
+            // Body
+            var locals = new List<LocalVariableDto>();
+            var instructions = new List<InstructionDto>();
+
+            if (Match(TextIrTokenType.LBrace))
+            {
+                ParseMethodBody(parameters, locals, instructions);
+                Consume(TextIrTokenType.RBrace, "Expected '}' to end method body");
+            }
+
+            return new MethodDto
+            {
+                name = methodName,
+                returnType = returnType,
+                access = access,
+                isStatic = isStatic,
+                isVirtual = isVirtual,
+                isOverride = isOverride,
+                isAbstract = isAbstract,
+                isConstructor = isConstructor,
+                parameters = parameters.ToArray(),
+                localVariables = locals.ToArray(),
+                instructionCount = instructions.Count,
+                instructions = instructions.ToArray()
+            };
+        }
+
+        private List<ParameterDto> ParseParameters()
+        {
+            var parameters = new List<ParameterDto>();
+
+            Consume(TextIrTokenType.LParen, "Expected '('");
+            while (!Check(TextIrTokenType.RParen) && !IsAtEnd())
+            {
+                if (Check(TextIrTokenType.Newline))
+                {
+                    Advance();
+                    continue;
+                }
+
+                var paramName = ConsumeIdentifier("Expected parameter name").Value;
+                Consume(TextIrTokenType.Colon, "Expected ':' after parameter name");
+                var paramType = ReadTypeTextUntilCommaOrParen();
+
+                parameters.Add(new ParameterDto { name = paramName, type = paramType });
+
+                if (Match(TextIrTokenType.Comma))
+                    continue;
+            }
+            Consume(TextIrTokenType.RParen, "Expected ')'");
+            return parameters;
+        }
+
+        private void ParseMethodBody(List<ParameterDto> parameters, List<LocalVariableDto> locals, List<InstructionDto> instructions)
+        {
+            // We parse until matching RBrace at this nesting level.
+            var localNames = new HashSet<string>(locals.Select(l => l.name), StringComparer.Ordinal);
+            var paramNames = new HashSet<string>(parameters.Select(p => p.name), StringComparer.Ordinal);
+
+            while (!Check(TextIrTokenType.RBrace) && !IsAtEnd())
+            {
+                if (Match(TextIrTokenType.Newline))
+                    continue;
+
+                if (CheckKeyword("local"))
+                {
+                    Advance();
+                    var localName = ConsumeIdentifier("Expected local name").Value;
+                    Consume(TextIrTokenType.Colon, "Expected ':' after local name");
+                    var localType = ReadTypeTextUntilLineEnd();
+                    locals.Add(new LocalVariableDto { name = localName, type = localType });
+                    localNames.Add(localName);
+                    continue;
+                }
+
+                if (CheckInstruction("if"))
+                {
+                    instructions.Add(ParseIfInstruction(localNames, paramNames));
+                    continue;
+                }
+
+                if (CheckInstruction("while"))
+                {
+                    instructions.Add(ParseWhileInstruction(localNames, paramNames));
+                    continue;
+                }
+
+                if (Peek().Type == TextIrTokenType.Instruction)
+                {
+                    instructions.Add(ParseSimpleInstruction());
+                    continue;
+                }
+
+                // Skip unknown tokens.
+                Advance();
+            }
+        }
+
+        private InstructionDto ParseIfInstruction(HashSet<string> localNames, HashSet<string> paramNames)
+        {
+            ConsumeInstruction("if", "Expected 'if'");
+            var condition = ParseConditionBlock(localNames, paramNames);
+            Consume(TextIrTokenType.LBrace, "Expected '{' after if condition");
+            var thenBlock = ParseInstructionBlock(localNames, paramNames);
+            Consume(TextIrTokenType.RBrace, "Expected '}' after if block");
+
+            InstructionDto[]? elseBlock = null;
+            if (MatchKeyword("else"))
+            {
+                Consume(TextIrTokenType.LBrace, "Expected '{' after else");
+                elseBlock = ParseInstructionBlock(localNames, paramNames);
+                Consume(TextIrTokenType.RBrace, "Expected '}' after else block");
+            }
+
+            object operand;
+            if (elseBlock == null)
+                operand = new { condition, thenBlock };
+            else
+                operand = new { condition, thenBlock, elseBlock };
+
+            return new InstructionDto
+            {
+                opCode = "if",
+                operand = JsonSerializer.SerializeToElement(operand)
+            };
+        }
+
+        private InstructionDto ParseWhileInstruction(HashSet<string> localNames, HashSet<string> paramNames)
+        {
+            ConsumeInstruction("while", "Expected 'while'");
+            var condition = ParseConditionBlock(localNames, paramNames);
+            Consume(TextIrTokenType.LBrace, "Expected '{' after while condition");
+            var body = ParseInstructionBlock(localNames, paramNames);
+            Consume(TextIrTokenType.RBrace, "Expected '}' after while body");
+
+            return new InstructionDto
+            {
+                opCode = "while",
+                operand = JsonSerializer.SerializeToElement(new { condition, body })
+            };
+        }
+
+        private InstructionDto[] ParseInstructionBlock(HashSet<string> localNames, HashSet<string> paramNames)
+        {
+            var list = new List<InstructionDto>();
+            while (!Check(TextIrTokenType.RBrace) && !IsAtEnd())
+            {
+                if (Match(TextIrTokenType.Newline))
+                    continue;
+
+                if (CheckInstruction("if"))
+                {
+                    list.Add(ParseIfInstruction(localNames, paramNames));
+                    continue;
+                }
+
+                if (CheckInstruction("while"))
+                {
+                    list.Add(ParseWhileInstruction(localNames, paramNames));
+                    continue;
+                }
+
+                if (Peek().Type == TextIrTokenType.Instruction)
+                {
+                    list.Add(ParseSimpleInstruction());
+                    continue;
+                }
+
+                Advance();
+            }
+
+            return list.ToArray();
+        }
+
+        private object ParseConditionBlock(HashSet<string> localNames, HashSet<string> paramNames)
+        {
+            Consume(TextIrTokenType.LParen, "Expected '('");
+
+            // Special case: (stack)
+            if (CheckIdentifierValue("stack"))
+            {
+                Advance();
+                Consume(TextIrTokenType.RParen, "Expected ')'");
+                return new { kind = "stack" };
+            }
+
+            // Parse: <lhs> <op> <rhs>
+            var lhs = ReadUntilComparisonOperator();
+            var op = ParseComparisonOperator();
+            var rhs = ReadUntil(TokenPredicateParenEnd);
+            Consume(TextIrTokenType.RParen, "Expected ')'");
+
+            var block = new List<InstructionDto>();
+            block.AddRange(EmitValueLoad(lhs, localNames, paramNames));
+            block.AddRange(EmitValueLoad(rhs, localNames, paramNames));
+            block.Add(new InstructionDto { opCode = op, operand = default });
+
+            return new { kind = "block", block = block.ToArray() };
+        }
+
+        private static bool TokenPredicateParenEnd(TextIrToken t) => t.Type == TextIrTokenType.RParen;
+
+        private List<TextIrToken> ReadUntilComparisonOperator()
+        {
+            return ReadUntil(t =>
+                t.Type is TextIrTokenType.EqualEqual or TextIrTokenType.BangEqual or TextIrTokenType.Less or TextIrTokenType.LessEqual or TextIrTokenType.Greater or TextIrTokenType.GreaterEqual);
+        }
+
+        private string ParseComparisonOperator()
+        {
+            if (Match(TextIrTokenType.EqualEqual)) return "ceq";
+            if (Match(TextIrTokenType.BangEqual)) return "cne";
+            if (Match(TextIrTokenType.Less)) return "clt";
+            if (Match(TextIrTokenType.LessEqual)) return "cle";
+            if (Match(TextIrTokenType.Greater)) return "cgt";
+            if (Match(TextIrTokenType.GreaterEqual)) return "cge";
+            throw new FormatException("Invalid comparison operator in condition");
+        }
+
+        private List<TextIrToken> ReadUntil(Func<TextIrToken, bool> stop)
+        {
+            var list = new List<TextIrToken>();
+            while (!IsAtEnd() && !stop(Peek()))
+            {
+                if (Peek().Type != TextIrTokenType.Newline)
+                    list.Add(Advance());
+                else
+                    Advance();
+            }
+            return list;
+        }
+
+        private IEnumerable<InstructionDto> EmitValueLoad(List<TextIrToken> expr, HashSet<string> localNames, HashSet<string> paramNames)
+        {
+            // Very small expression surface:
+            // - identifier => ldloc/ldarg (prefers params; special 'this')
+            // - number => ldc int32
+            // - string => ldstr
+            if (expr.Count == 0)
+                yield break;
+
+            if (expr.Count == 1 && expr[0].Type == TextIrTokenType.String)
+            {
+                yield return new InstructionDto { opCode = "ldstr", operand = JsonSerializer.SerializeToElement(new { value = expr[0].Value }) };
+                yield break;
+            }
+
+            if (expr.Count == 1 && expr[0].Type == TextIrTokenType.Number)
+            {
+                yield return new InstructionDto { opCode = "ldc", operand = JsonSerializer.SerializeToElement(new { value = expr[0].Value, type = "int32" }) };
+                yield break;
+            }
+
+            if (expr.Count == 1 && expr[0].Type == TextIrTokenType.Identifier)
+            {
+                var name = expr[0].Value;
+                if (string.Equals(name, "this", StringComparison.Ordinal))
+                {
+                    yield return new InstructionDto { opCode = "ldarg", operand = JsonSerializer.SerializeToElement(new { argumentName = "this" }) };
+                    yield break;
+                }
+
+                if (paramNames.Contains(name))
+                {
+                    yield return new InstructionDto { opCode = "ldarg", operand = JsonSerializer.SerializeToElement(new { argumentName = name }) };
+                    yield break;
+                }
+
+                if (localNames.Contains(name))
+                {
+                    yield return new InstructionDto { opCode = "ldloc", operand = JsonSerializer.SerializeToElement(new { localName = name }) };
+                    yield break;
+                }
+
+                // Fallback: treat as local.
+                yield return new InstructionDto { opCode = "ldloc", operand = JsonSerializer.SerializeToElement(new { localName = name }) };
+                yield break;
+            }
+
+            // Fallback: stringify token sequence and try loading as identifier.
+            var text = string.Join("", expr.Select(t => t.Value));
+            yield return new InstructionDto { opCode = "ldloc", operand = JsonSerializer.SerializeToElement(new { localName = text }) };
+        }
+
+        private InstructionDto ParseSimpleInstruction()
+        {
+            var op = Consume(TextIrTokenType.Instruction, "Expected instruction").Value;
+
+            // Read args until newline or brace
+            var args = new List<TextIrToken>();
+            while (!IsAtEnd() && !Check(TextIrTokenType.Newline) && !Check(TextIrTokenType.LBrace) && !Check(TextIrTokenType.RBrace))
+            {
+                args.Add(Advance());
+            }
+            Match(TextIrTokenType.Newline);
+
+            // Normalize some textual aliases
+            if (op is "ldc.i4" or "ldc.i8")
+                op = "ldc";
+
+            if (op is "ldc.r4" or "ldc.r8")
+                op = "ldc";
+
+            if (op == "ldarg" && args.Count >= 1)
+            {
+                return new InstructionDto
+                {
+                    opCode = "ldarg",
+                    operand = JsonSerializer.SerializeToElement(new { argumentName = args[0].Value })
+                };
+            }
+
+            if (op == "starg" && args.Count >= 1)
+            {
+                return new InstructionDto
+                {
+                    opCode = "starg",
+                    operand = JsonSerializer.SerializeToElement(new { argumentName = args[0].Value })
+                };
+            }
+
+            if ((op == "ldloc" || op == "stloc") && args.Count >= 1)
+            {
+                return new InstructionDto
+                {
+                    opCode = op,
+                    operand = JsonSerializer.SerializeToElement(new { localName = args[0].Value })
+                };
+            }
+
+            if (op == "ldstr" && args.Count >= 1)
+            {
+                return new InstructionDto
+                {
+                    opCode = "ldstr",
+                    operand = JsonSerializer.SerializeToElement(new { value = args[0].Value })
+                };
+            }
+
+            if (op == "ldc" && args.Count >= 1)
+            {
+                return new InstructionDto
+                {
+                    opCode = "ldc",
+                    operand = JsonSerializer.SerializeToElement(new { value = args[0].Value, type = "int32" })
+                };
+            }
+
+            if ((op == "ldfld" || op == "stfld") && args.Count >= 1)
+            {
+                var field = args[0].Value;
+                var lastDot = field.LastIndexOf('.');
+                if (lastDot >= 0) field = field[(lastDot + 1)..];
+
+                return new InstructionDto
+                {
+                    opCode = op,
+                    operand = JsonSerializer.SerializeToElement(new { field })
+                };
+            }
+
+            if ((op == "call" || op == "callvirt") && args.Count >= 1)
+            {
+                var method = ParseCallTarget(args);
+                return new InstructionDto
+                {
+                    opCode = op,
+                    operand = JsonSerializer.SerializeToElement(new { method })
+                };
+            }
+
+            if (op == "newobj" && args.Count >= 1)
+            {
+                // newobj TypeName[.constructor(...)]
+                var typeTokenText = string.Join("", args.Select(a => a.Value));
+                var typeName = typeTokenText;
+                var dot = typeName.IndexOf('.', StringComparison.Ordinal);
+                if (dot >= 0)
+                    typeName = typeName[..dot];
+
+                return new InstructionDto
+                {
+                    opCode = "newobj",
+                    operand = JsonSerializer.SerializeToElement(new { type = typeName })
+                };
+            }
+
+            // Default: raw args as strings
+            return args.Count == 0
+                ? new InstructionDto { opCode = op, operand = default }
+                : new InstructionDto { opCode = op, operand = JsonSerializer.SerializeToElement(new { arguments = args.Select(a => a.Value).ToArray() }) };
+        }
+
+        private static CallTargetDto ParseCallTarget(List<TextIrToken> args)
+        {
+            // Expected: <DeclaringType>.<Name> ( <paramTypes...> ) -> <returnType>
+            // We'll reconstruct the method name by consuming tokens until '('.
+
+            var i = 0;
+            var sb = new StringBuilder();
+            while (i < args.Count && args[i].Type != TextIrTokenType.LParen)
+            {
+                sb.Append(args[i].Value);
+                i++;
+            }
+
+            var fullMethodName = sb.ToString();
+            var lastDot = fullMethodName.LastIndexOf('.');
+            var declaringType = lastDot >= 0 ? fullMethodName[..lastDot] : "object";
+            var name = lastDot >= 0 ? fullMethodName[(lastDot + 1)..] : fullMethodName;
+
+            // Params
+            var paramTypes = new List<string>();
+            if (i < args.Count && args[i].Type == TextIrTokenType.LParen)
+            {
+                i++; // skip '('
+                var paramSb = new StringBuilder();
+                while (i < args.Count && args[i].Type != TextIrTokenType.RParen)
+                {
+                    if (args[i].Type == TextIrTokenType.Comma)
+                    {
+                        var p = paramSb.ToString().Trim();
+                        if (p.Length > 0) paramTypes.Add(p);
+                        paramSb.Clear();
+                    }
+                    else
+                    {
+                        paramSb.Append(args[i].Value);
+                    }
+                    i++;
+                }
+                var last = paramSb.ToString().Trim();
+                if (last.Length > 0) paramTypes.Add(last);
+
+                if (i < args.Count && args[i].Type == TextIrTokenType.RParen)
+                    i++;
+            }
+
+            // Return type after ->
+            string returnType = "void";
+            for (; i < args.Count; i++)
+            {
+                if (args[i].Type == TextIrTokenType.Arrow)
+                {
+                    i++;
+                    if (i < args.Count)
+                    {
+                        returnType = string.Join("", args.Skip(i).Select(t => t.Value)).Trim();
+                    }
+                    break;
+                }
+            }
+
+            return new CallTargetDto
+            {
+                declaringType = declaringType,
+                name = name,
+                parameterTypes = paramTypes.ToArray(),
+                returnType = returnType
+            };
+        }
+
+        private string ReadTypeTextUntilCommaOrParen()
+        {
+            var sb = new StringBuilder();
+            while (!IsAtEnd() && !Check(TextIrTokenType.Comma) && !Check(TextIrTokenType.RParen))
+            {
+                if (Peek().Type != TextIrTokenType.Newline)
+                    sb.Append(Advance().Value);
+                else
+                    Advance();
+            }
+            return sb.ToString().Trim();
+        }
+
+        private string ReadTypeTextUntilLineEnd(bool stopAtLBrace = false)
+        {
+            var sb = new StringBuilder();
+            while (!IsAtEnd() && !Check(TextIrTokenType.Newline) && !(stopAtLBrace && Check(TextIrTokenType.LBrace)) && !Check(TextIrTokenType.RBrace))
+            {
+                sb.Append(Advance().Value);
+            }
+            Match(TextIrTokenType.Newline);
+            return sb.ToString().Trim();
+        }
+
+        private bool CheckIdentifierValue(string value)
+            => Peek().Type == TextIrTokenType.Identifier && string.Equals(Peek().Value, value, StringComparison.Ordinal);
+
+        private bool Check(TextIrTokenType type)
+            => Peek().Type == type;
+
+        private bool CheckKeyword(string value)
+            => Peek().Type == TextIrTokenType.Keyword && string.Equals(Peek().Value, value, StringComparison.Ordinal);
+
+        private bool MatchKeyword(string value)
+        {
+            if (CheckKeyword(value))
+            {
+                Advance();
+                return true;
+            }
+            return false;
+        }
+
+        private void ConsumeKeyword(string value, string message)
+        {
+            if (!MatchKeyword(value))
+                throw new FormatException(message + $" (got '{Peek().Value}')");
+        }
+
+        private bool CheckInstruction(string value)
+            => Peek().Type == TextIrTokenType.Instruction && string.Equals(Peek().Value, value, StringComparison.Ordinal);
+
+        private void ConsumeInstruction(string value, string message)
+        {
+            if (!CheckInstruction(value))
+                throw new FormatException(message);
+            Advance();
+        }
+
+        private string ConsumeVersionLike(string message)
+        {
+            var sb = new StringBuilder();
+            while (!IsAtEnd() && !Check(TextIrTokenType.Newline) && !CheckKeyword("class") && !CheckKeyword("interface") && !CheckKeyword("struct") && !CheckKeyword("enum"))
+            {
+                var t = Advance();
+                if (t.Type is TextIrTokenType.Identifier or TextIrTokenType.Number)
+                    sb.Append(t.Value);
+                else
+                    break;
+            }
+            Match(TextIrTokenType.Newline);
+            var v = sb.ToString().Trim();
+            if (v.Length == 0) throw new FormatException(message);
+            return v;
+        }
+
+        private TextIrToken ConsumeIdentifier(string message)
+        {
+            if (Peek().Type != TextIrTokenType.Identifier)
+                throw new FormatException(message);
+            return Advance();
+        }
+
+        private TextIrToken Consume(TextIrTokenType type, string message)
+        {
+            if (Peek().Type != type)
+                throw new FormatException(message);
+            return Advance();
+        }
+
+        private bool Match(TextIrTokenType type)
+        {
+            if (Peek().Type == type)
+            {
+                Advance();
+                return true;
+            }
+            return false;
+        }
+
+        private TextIrToken Advance()
+        {
+            if (!IsAtEnd()) _current++;
+            return Previous();
+        }
+
+        private bool IsAtEnd() => Peek().Type == TextIrTokenType.Eof;
+
+        private TextIrToken Peek() => _tokens[_current];
+        private TextIrToken Previous() => _tokens[_current - 1];
+    }
+}

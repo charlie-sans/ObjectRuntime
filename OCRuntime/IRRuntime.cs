@@ -1,217 +1,762 @@
-﻿using MongoDB.Bson.IO;
-using ObjectIR.Core.IR;
+﻿using System.Reflection;
 using System.Text.Json;
-using System.Text.Json.Serialization;
+using OCRuntime.IR;
+using OCRuntime.Runtime;
+using OCRuntime.TextIR;
 
-namespace OCRuntime
+namespace OCRuntime;
+
+public sealed class IRRuntime
 {
-
-    public class IRRuntime
+    public enum InputFormat
     {
-        private Rootobject program;
-        private Stack<CallFrame> callStack = new();
-        public Action<CallFrame, Instruction>? OnStep;
-        public delegate object? NativeMethod(object?[] args);
-        private readonly Dictionary<string, NativeMethod> nativeMethods = new();
+        Auto,
+        Json,
+        TextIr
+    }
 
-        public IRRuntime(string programJson)
+    private readonly ModuleDto _program;
+    private readonly Stack<CallFrame> _callStack = new();
+
+    public Action<CallFrame, InstructionDto>? OnStep;
+
+    public delegate object? NativeMethod(object?[] args);
+    private readonly Dictionary<string, NativeMethod> _nativeMethods = new(StringComparer.Ordinal);
+
+    public bool EnableReflectionNativeMethods { get; set; }
+
+    private readonly Dictionary<(string declaringType, string fieldName), object?> _staticFields = new();
+
+    public IRRuntime(string input, InputFormat format = InputFormat.Auto, bool enableReflectionNativeMethods = false)
+    {
+        EnableReflectionNativeMethods = enableReflectionNativeMethods;
+
+        _program = format switch
         {
-            program = JsonSerializer.Deserialize<Rootobject>(programJson);
+            InputFormat.Json => DeserializeJsonModule(input),
+            InputFormat.TextIr => TextIrParser.ParseModule(input),
+            _ => AutoParse(input)
+        };
 
-            nativeMethods["System.Console.WriteLine(string)"] =
-                args =>
-                {
-                    Console.WriteLine(args[0]);
-                    return null;
-                };
-        }
-
-
-        public void Run()
+        _nativeMethods["System.Console.WriteLine(string)"] = args =>
         {
-            Console.WriteLine("Running Module: " + program.name);
+            Console.WriteLine(args.Length > 0 ? args[0] : null);
+            return null;
+        };
+    }
 
-            var programType = program.types.Single(t => t.name == "Program");
-            var entry = programType.methods.Single(m => m.name == "Main" && m.isStatic);
+    private static ModuleDto AutoParse(string input)
+    {
+        var trimmed = input.AsSpan().TrimStart();
+        if (!trimmed.IsEmpty && (trimmed[0] == '{' || trimmed[0] == '['))
+            return DeserializeJsonModule(input);
 
-            callStack.Push(new CallFrame(entry));
-            Execute();
-        }
+        return TextIrParser.ParseModule(input);
+    }
 
-        private void Execute()
+    private static ModuleDto DeserializeJsonModule(string json)
+        => JsonSerializer.Deserialize<ModuleDto>(json)
+           ?? throw new InvalidOperationException("Failed to deserialize module JSON");
+
+    public void Run()
+    {
+        Console.WriteLine("Running Module: " + _program.name);
+
+        var programType = _program.types.Single(t => t.name == "Program");
+        var entry = programType.methods.Single(m => m.name == "Main" && m.isStatic);
+
+        _callStack.Push(new CallFrame(entry));
+        Execute();
+    }
+
+    private void Execute()
+    {
+        while (_callStack.Count > 0)
         {
-            while (callStack.Count > 0)
+            var frame = _callStack.Peek();
+
+            if (frame.IP >= frame.Method.instructions.Length)
             {
-                var frame = callStack.Peek();
+                _callStack.Pop();
+                continue;
+            }
 
-                if (frame.IP >= frame.Method.instructions.Length)
+            var instr = frame.Method.instructions[frame.IP++];
+            OnStep?.Invoke(frame, instr);
+            ExecuteInstruction(frame, instr);
+        }
+    }
+
+    private void ExecuteInstruction(CallFrame frame, InstructionDto instr)
+    {
+        switch (instr.opCode)
+        {
+            case "nop":
+                return;
+
+            case "dup":
+            {
+                var v = frame.EvalStack.Peek();
+                frame.EvalStack.Push(v);
+                return;
+            }
+
+            case "pop":
+                _ = frame.EvalStack.Pop();
+                return;
+
+            case "ldnull":
+                frame.EvalStack.Push(null);
+                return;
+
+            case "ldc":
+            {
+                var valueText = GetString(instr.operand, "value") ?? "null";
+                var typeName = GetString(instr.operand, "type") ?? "system.string";
+
+                object? value = valueText == "null" ? null : ValueHelpers.ConvertTo(typeName, valueText);
+                frame.EvalStack.Push(value);
+                return;
+            }
+
+            // Back-compat for older JSON or hand-authored IR
+            case "ldstr":
+                frame.EvalStack.Push(GetString(instr.operand, "value"));
+                return;
+
+            case "ldarg":
+            {
+                if (TryGetInt(instr.operand, "index", out int index))
                 {
-                    callStack.Pop();
-                    continue;
+                    frame.EvalStack.Push(index >= 0 && index < frame.Args.Length ? frame.Args[index] : null);
+                    return;
                 }
 
-                var instr = frame.Method.instructions[frame.IP++];
-                ExecuteInstruction(frame, instr);
-            }
-        }
+                var argName = GetString(instr.operand, "argumentName");
+                if (argName != null && string.Equals(argName, "this", StringComparison.Ordinal))
+                {
+                    frame.EvalStack.Push(frame.This);
+                    return;
+                }
+                if (argName != null && frame.ArgNameToIndex.TryGetValue(argName, out int idx))
+                {
+                    frame.EvalStack.Push(idx >= 0 && idx < frame.Args.Length ? frame.Args[idx] : null);
+                    return;
+                }
 
-        private void ExecuteInstruction(CallFrame frame, Instruction instr)
-        {
-            switch (instr.opCode)
+                throw new InvalidOperationException("ldarg missing operand.index (or operand.argumentName)");
+            }
+
+            case "starg":
             {
-                case "ldc.i32":
-                    frame.EvalStack.Push(int.Parse(instr.operand.value));
-                    break;
+                var argName = GetString(instr.operand, "argumentName")
+                              ?? throw new InvalidOperationException("starg missing operand.argumentName");
 
-                case "add":
-                    {
-                        var b = (int)frame.EvalStack.Pop();
-                        var a = (int)frame.EvalStack.Pop();
-                        frame.EvalStack.Push(a + b);
-                        break;
-                    }
+                if (!frame.ArgNameToIndex.TryGetValue(argName, out int idx) || idx < 0 || idx >= frame.Args.Length)
+                {
+                    throw new InvalidOperationException($"starg invalid argument '{argName}'");
+                }
 
-                case "ret":
-                    {
-                        object? returnValue = null;
-
-                        if (frame.EvalStack.Count > 0)
-                            returnValue = frame.EvalStack.Pop();
-
-                        callStack.Pop();
-
-                        if (callStack.Count > 0 && returnValue != null)
-                            callStack.Peek().EvalStack.Push(returnValue);
-
-                        break;
-                    }
-                case "ldc":
-                case "ldstr":
-                    frame.EvalStack.Push(instr.operand.value);
-                    break;
-
-                case "call":
-                    {
-                        var target = instr.operand.method;
-
-                        var signature =
-                            $"{target.declaringType}.{target.name}({string.Join(",", target.parameterTypes)})";
-
-                        // 🔹 Native method?
-                        if (nativeMethods.TryGetValue(signature, out var native))
-                        {
-                            var args = new object?[target.parameterTypes.Length];
-
-                            for (int i = args.Length - 1; i >= 0; i--)
-                                args[i] = frame.EvalStack.Pop();
-
-                            var result = native(args);
-
-                            if (target.returnType != "void")
-                                frame.EvalStack.Push(result);
-
-                            break;
-                        }
-
-                        // 🔹 ObjectIR method
-                        var declaringType = program.types
-                            .Single(t => t.name == target.declaringType);
-
-                        var method = declaringType.methods
-                            .Single(m => m.name == target.name);
-
-                        var newFrame = new CallFrame(method);
-
-                        // move arguments
-                        for (int i = target.parameterTypes.Length - 1; i >= 0; i--)
-                            newFrame.EvalStack.Push(frame.EvalStack.Pop());
-
-                        callStack.Push(newFrame);
-                        break;
-                    }
-                default:
-                    throw new NotSupportedException($"Unknown opcode {instr.opCode}");
+                frame.Args[idx] = frame.EvalStack.Pop();
+                return;
             }
-        }
-        public class CallFrame
-        {
-            public Method Method { get; }
-            public int IP { get; set; }
-            public Stack<object?> EvalStack { get; } = new();
 
-            public CallFrame(Method method)
+            case "ldloc":
             {
-                Method = method;
-                IP = 0;
+                var localName = GetString(instr.operand, "localName")
+                                ?? throw new InvalidOperationException("ldloc missing operand.localName");
+                frame.Locals.TryGetValue(localName, out var value);
+                frame.EvalStack.Push(value);
+                return;
             }
+
+            case "stloc":
+            {
+                var localName = GetString(instr.operand, "localName")
+                                ?? throw new InvalidOperationException("stloc missing operand.localName");
+                frame.Locals[localName] = frame.EvalStack.Pop();
+                return;
+            }
+
+            case "add":
+            case "sub":
+            case "mul":
+            case "div":
+            case "rem":
+            {
+                var b = frame.EvalStack.Pop();
+                var a = frame.EvalStack.Pop();
+                frame.EvalStack.Push(ExecuteBinaryArithmetic(instr.opCode, a, b));
+                return;
+            }
+
+            case "neg":
+            {
+                var v = frame.EvalStack.Pop();
+                frame.EvalStack.Push(-ValueHelpers.ToDouble(v));
+                return;
+            }
+
+            case "not":
+            {
+                var v = frame.EvalStack.Pop();
+                frame.EvalStack.Push(!ValueHelpers.ToBool(v));
+                return;
+            }
+
+            case "ceq":
+            case "cne":
+            case "cgt":
+            case "cge":
+            case "clt":
+            case "cle":
+            {
+                var b = frame.EvalStack.Pop();
+                var a = frame.EvalStack.Pop();
+                frame.EvalStack.Push(ExecuteComparison(instr.opCode, a, b));
+                return;
+            }
+
+            case "newobj":
+            {
+                var typeName = GetString(instr.operand, "type")
+                               ?? throw new InvalidOperationException("newobj missing operand.type");
+                frame.EvalStack.Push(new ManagedObject(typeName));
+                return;
+            }
+
+            case "newarr":
+            {
+                _ = GetString(instr.operand, "elementType");
+                frame.EvalStack.Push(new List<object?>());
+                return;
+            }
+
+            case "ldelem":
+            {
+                var index = (int)ValueHelpers.ToInt64(frame.EvalStack.Pop());
+                var arr = frame.EvalStack.Pop();
+                if (arr is not List<object?> list)
+                    throw new InvalidOperationException("ldelem expects List<object?> array");
+                frame.EvalStack.Push(index >= 0 && index < list.Count ? list[index] : null);
+                return;
+            }
+
+            case "stelem":
+            {
+                var value = frame.EvalStack.Pop();
+                var index = (int)ValueHelpers.ToInt64(frame.EvalStack.Pop());
+                var arr = frame.EvalStack.Pop();
+                if (arr is not List<object?> list)
+                    throw new InvalidOperationException("stelem expects List<object?> array");
+
+                while (list.Count <= index)
+                    list.Add(null);
+
+                list[index] = value;
+                return;
+            }
+
+            case "ldfld":
+            {
+                var fieldName = GetFieldName(instr.operand) ?? throw new InvalidOperationException("ldfld missing operand.field.name");
+
+                ManagedObject? instance = null;
+                if (frame.EvalStack.Count > 0 && frame.EvalStack.Peek() is ManagedObject)
+                {
+                    instance = (ManagedObject?)frame.EvalStack.Pop();
+                }
+                instance ??= frame.This;
+
+                if (instance == null)
+                    throw new InvalidOperationException("ldfld requires an object instance (stack or this)");
+
+                frame.EvalStack.Push(instance.GetField(fieldName));
+                return;
+            }
+
+            case "stfld":
+            {
+                var fieldName = GetFieldName(instr.operand) ?? throw new InvalidOperationException("stfld missing operand.field.name");
+                var value = frame.EvalStack.Pop();
+
+                ManagedObject? instance = null;
+                if (frame.EvalStack.Count > 0 && frame.EvalStack.Peek() is ManagedObject)
+                {
+                    instance = (ManagedObject?)frame.EvalStack.Pop();
+                }
+                instance ??= frame.This;
+
+                if (instance == null)
+                    throw new InvalidOperationException("stfld requires an object instance (stack or this)");
+
+                instance.SetField(fieldName, value);
+                return;
+            }
+
+            case "ldsfld":
+            {
+                var key = GetStaticFieldKey(instr.operand);
+                _staticFields.TryGetValue(key, out var value);
+                frame.EvalStack.Push(value);
+                return;
+            }
+
+            case "stsfld":
+            {
+                var key = GetStaticFieldKey(instr.operand);
+                _staticFields[key] = frame.EvalStack.Pop();
+                return;
+            }
+
+            case "conv":
+            {
+                var targetType = GetString(instr.operand, "targetType")
+                                 ?? throw new InvalidOperationException("conv missing operand.targetType");
+                var value = frame.EvalStack.Pop();
+                frame.EvalStack.Push(ValueHelpers.ConvertTo(targetType, value));
+                return;
+            }
+
+            case "castclass":
+            {
+                var targetType = GetString(instr.operand, "targetType")
+                                 ?? throw new InvalidOperationException("castclass missing operand.targetType");
+                var value = frame.EvalStack.Pop();
+
+                if (value is null)
+                {
+                    frame.EvalStack.Push(null);
+                    return;
+                }
+
+                if (value is ManagedObject obj && string.Equals(obj.TypeName, targetType, StringComparison.Ordinal))
+                {
+                    frame.EvalStack.Push(obj);
+                    return;
+                }
+
+                throw new InvalidCastException($"Cannot cast value to '{targetType}'");
+            }
+
+            case "isinst":
+            {
+                var targetType = GetString(instr.operand, "targetType")
+                                 ?? throw new InvalidOperationException("isinst missing operand.targetType");
+                var value = frame.EvalStack.Pop();
+                frame.EvalStack.Push(value is ManagedObject obj && string.Equals(obj.TypeName, targetType, StringComparison.Ordinal));
+                return;
+            }
+
+            case "break":
+                throw new BreakSignal();
+
+            case "continue":
+                throw new ContinueSignal();
+
+            case "if":
+            {
+                var cond = GetCondition(instr.operand);
+                var thenBlock = GetInstructionBlock(instr.operand, "thenBlock")
+                                ?? throw new InvalidOperationException("if missing operand.thenBlock");
+                var elseBlock = GetInstructionBlock(instr.operand, "elseBlock");
+
+                if (EvaluateCondition(cond, frame))
+                {
+                    ExecuteBlock(frame, thenBlock);
+                }
+                else if (elseBlock != null)
+                {
+                    ExecuteBlock(frame, elseBlock);
+                }
+                return;
+            }
+
+            case "while":
+            {
+                var cond = GetCondition(instr.operand);
+                var body = GetInstructionBlock(instr.operand, "body")
+                           ?? throw new InvalidOperationException("while missing operand.body");
+
+                while (EvaluateCondition(cond, frame))
+                {
+                    try
+                    {
+                        ExecuteBlock(frame, body);
+                    }
+                    catch (ContinueSignal)
+                    {
+                        continue;
+                    }
+                    catch (BreakSignal)
+                    {
+                        break;
+                    }
+                }
+
+                return;
+            }
+
+            case "call":
+            case "callvirt":
+                ExecuteCall(frame, instr);
+                return;
+
+            case "ret":
+                ExecuteReturn();
+                return;
+
+            default:
+                throw new NotSupportedException($"Unknown opcode '{instr.opCode}'");
         }
+    }
 
-
-        public class Rootobject
+    private void ExecuteBlock(CallFrame frame, InstructionDto[] instructions)
+    {
+        foreach (var i in instructions)
         {
-            public string name { get; set; }
-            public string version { get; set; }
-            public Metadata metadata { get; set; }
-            public Type[] types { get; set; }
-            public object[] functions { get; set; }
+            ExecuteInstruction(frame, i);
         }
+    }
 
-        public class Metadata
+    private void ExecuteReturn()
+    {
+        var frame = _callStack.Pop();
+        object? returnValue = frame.EvalStack.Count > 0 ? frame.EvalStack.Pop() : null;
+
+        if (_callStack.Count > 0 && returnValue != null)
         {
+            _callStack.Peek().EvalStack.Push(returnValue);
         }
+    }
 
-        public class Type
+    private void ExecuteCall(CallFrame frame, InstructionDto instr)
+    {
+        var methodNode = instr.operand.ValueKind == JsonValueKind.Object && instr.operand.TryGetProperty("method", out var m)
+            ? m
+            : default;
+
+        var target = methodNode.ValueKind == JsonValueKind.Object
+            ? JsonSerializer.Deserialize<CallTargetDto>(methodNode.GetRawText())
+            : null;
+
+        if (target == null)
+            throw new InvalidOperationException("call/callvirt missing operand.method");
+
+        var signature = $"{target.declaringType}.{target.name}({string.Join(",", target.parameterTypes)})";
+
+        var args = new object?[target.parameterTypes.Length];
+        for (int i = args.Length - 1; i >= 0; i--)
         {
-            public string kind { get; set; }
-            public string name { get; set; }
-            public string _namespace { get; set; }
-            public string access { get; set; }
-            public bool isAbstract { get; set; }
-            public bool isSealed { get; set; }
-            public object[] interfaces { get; set; }
-            public object[] baseInterfaces { get; set; }
-            public object[] genericParameters { get; set; }
-            public object[] fields { get; set; }
-            public Method[] methods { get; set; }
-            public object[] properties { get; set; }
+            args[i] = frame.EvalStack.Pop();
         }
 
-        public class Method
+        ManagedObject? instance = null;
+        if (instr.opCode == "callvirt")
         {
-            public string name { get; set; }
-            public string returnType { get; set; }
-            public string access { get; set; }
-            public bool isStatic { get; set; }
-            public bool isVirtual { get; set; }
-            public bool isOverride { get; set; }
-            public bool isAbstract { get; set; }
-            public bool isConstructor { get; set; }
-            public object[] parameters { get; set; }
-            public object[] localVariables { get; set; }
-            public int instructionCount { get; set; }
-            public Instruction[] instructions { get; set; }
+            instance = frame.EvalStack.Pop() as ManagedObject;
+            if (instance == null)
+                throw new InvalidOperationException("callvirt requires an object instance on the stack");
         }
 
-        public class Instruction
+        if (_nativeMethods.TryGetValue(signature, out var native))
         {
-            public string opCode { get; set; }
-            public Operand operand { get; set; }
+            var result = native(args);
+            if (!IsVoid(target.returnType))
+            {
+                frame.EvalStack.Push(result);
+            }
+            return;
         }
 
-        public class Operand
+        if (EnableReflectionNativeMethods && TryInvokeReflectedNative(target, args, out var reflectedResult))
         {
-            public string value { get; set; }
-            public string type { get; set; }
-            public Method1 method { get; set; }
+            if (!IsVoid(target.returnType))
+            {
+                frame.EvalStack.Push(reflectedResult);
+            }
+            return;
         }
 
-        public class Method1
+        var declaringType = _program.types.Single(t => t.name == target.declaringType || QualifiedNameMatches(t, target.declaringType));
+        var method = declaringType.methods.Single(m => m.name == target.name);
+
+        var newFrame = new CallFrame(method, args)
         {
-            public string declaringType { get; set; }
-            public string name { get; set; }
-            public string returnType { get; set; }
-            public string[] parameterTypes { get; set; }
+            This = instance
+        };
+
+        _callStack.Push(newFrame);
+    }
+
+    private static bool TryInvokeReflectedNative(CallTargetDto target, object?[] args, out object? result)
+    {
+        result = null;
+
+        var clrType = ResolveClrType(target.declaringType);
+        if (clrType == null)
+            return false;
+
+        var paramClrTypes = target.parameterTypes.Select(MapTypeNameToClrType).ToArray();
+        if (paramClrTypes.Any(t => t == null))
+            return false;
+
+        var method = clrType.GetMethod(
+            target.name,
+            BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static,
+            binder: null,
+            types: paramClrTypes!,
+            modifiers: null);
+
+        if (method == null)
+            return false;
+
+        var convertedArgs = new object?[args.Length];
+        for (int i = 0; i < args.Length; i++)
+        {
+            convertedArgs[i] = ValueHelpers.ConvertTo(paramClrTypes[i]!, args[i]);
         }
 
+        result = method.Invoke(null, convertedArgs);
+        return true;
+    }
+
+    private static Type? ResolveClrType(string typeName)
+    {
+        var t = Type.GetType(typeName, throwOnError: false, ignoreCase: false);
+        if (t != null) return t;
+
+        t = MapTypeNameToClrType(typeName);
+        if (t != null) return t;
+
+        foreach (var asm in AppDomain.CurrentDomain.GetAssemblies())
+        {
+            t = asm.GetType(typeName, throwOnError: false, ignoreCase: false);
+            if (t != null) return t;
+        }
+
+        return null;
+    }
+
+    private static Type? MapTypeNameToClrType(string typeName)
+    {
+        var n = typeName.Trim().ToLowerInvariant();
+        return n switch
+        {
+            "void" or "system.void" => typeof(void),
+            "bool" or "system.boolean" => typeof(bool),
+            "int8" or "system.sbyte" => typeof(sbyte),
+            "uint8" or "system.byte" => typeof(byte),
+            "int16" or "system.int16" => typeof(short),
+            "uint16" or "system.uint16" => typeof(ushort),
+            "int32" or "system.int32" => typeof(int),
+            "uint32" or "system.uint32" => typeof(uint),
+            "int64" or "system.int64" => typeof(long),
+            "uint64" or "system.uint64" => typeof(ulong),
+            "float32" or "single" or "system.single" => typeof(float),
+            "float64" or "double" or "system.double" => typeof(double),
+            "char" or "system.char" => typeof(char),
+            "string" or "system.string" => typeof(string),
+            _ => null
+        };
+    }
+
+    private static bool QualifiedNameMatches(TypeDto t, string qualified)
+    {
+        if (string.IsNullOrWhiteSpace(t._namespace))
+            return string.Equals(t.name, qualified, StringComparison.Ordinal);
+
+        return string.Equals($"{t._namespace}.{t.name}", qualified, StringComparison.Ordinal);
+    }
+
+    private static bool IsVoid(string returnType)
+    {
+        var n = returnType.Trim().ToLowerInvariant();
+        return n is "void" or "system.void";
+    }
+
+    private static object ExecuteBinaryArithmetic(string op, object? a, object? b)
+    {
+        // If either looks non-integer, promote to double.
+        bool useDouble = a is float or double || b is float or double || a is string || b is string;
+        if (useDouble)
+        {
+            var da = ValueHelpers.ToDouble(a);
+            var db = ValueHelpers.ToDouble(b);
+            return op switch
+            {
+                "add" => da + db,
+                "sub" => da - db,
+                "mul" => da * db,
+                "div" => da / db,
+                "rem" => da % db,
+                _ => throw new NotSupportedException(op)
+            };
+        }
+
+        var ia = ValueHelpers.ToInt64(a);
+        var ib = ValueHelpers.ToInt64(b);
+        return op switch
+        {
+            "add" => ia + ib,
+            "sub" => ia - ib,
+            "mul" => ia * ib,
+            "div" => ia / ib,
+            "rem" => ia % ib,
+            _ => throw new NotSupportedException(op)
+        };
+    }
+
+    private static bool ExecuteComparison(string op, object? a, object? b)
+    {
+        if (a is string sa && b is string sb)
+        {
+            return op switch
+            {
+                "ceq" => string.Equals(sa, sb, StringComparison.Ordinal),
+                "cne" => !string.Equals(sa, sb, StringComparison.Ordinal),
+                "cgt" => string.Compare(sa, sb, StringComparison.Ordinal) > 0,
+                "cge" => string.Compare(sa, sb, StringComparison.Ordinal) >= 0,
+                "clt" => string.Compare(sa, sb, StringComparison.Ordinal) < 0,
+                "cle" => string.Compare(sa, sb, StringComparison.Ordinal) <= 0,
+                _ => throw new NotSupportedException(op)
+            };
+        }
+
+        if (a is bool ba && b is bool bb)
+        {
+            return op switch
+            {
+                "ceq" => ba == bb,
+                "cne" => ba != bb,
+                _ => throw new NotSupportedException($"Comparison '{op}' not supported for bool")
+            };
+        }
+
+        var da = ValueHelpers.ToDouble(a);
+        var db = ValueHelpers.ToDouble(b);
+        return op switch
+        {
+            "ceq" => da == db,
+            "cne" => da != db,
+            "cgt" => da > db,
+            "cge" => da >= db,
+            "clt" => da < db,
+            "cle" => da <= db,
+            _ => throw new NotSupportedException(op)
+        };
+    }
+
+    private static ConditionDto GetCondition(JsonElement operand)
+    {
+        if (operand.ValueKind != JsonValueKind.Object || !operand.TryGetProperty("condition", out var c))
+            return new ConditionDto { kind = "stack" };
+
+        return JsonSerializer.Deserialize<ConditionDto>(c.GetRawText()) ?? new ConditionDto { kind = "stack" };
+    }
+
+    private bool EvaluateCondition(ConditionDto condition, CallFrame frame)
+    {
+        switch (condition.Kind)
+        {
+            case ConditionKind.Stack:
+                return ValueHelpers.ToBool(frame.EvalStack.Pop());
+
+            case ConditionKind.Binary:
+            {
+                var right = frame.EvalStack.Pop();
+                var left = frame.EvalStack.Pop();
+                var op = condition.operation ?? "ceq";
+                return ExecuteComparison(op, left, right);
+            }
+
+            case ConditionKind.Expression:
+            {
+                if (condition.expression != null)
+                {
+                    ExecuteInstruction(frame, condition.expression);
+                }
+                return ValueHelpers.ToBool(frame.EvalStack.Pop());
+            }
+
+            case ConditionKind.Block:
+            {
+                if (condition.block != null)
+                {
+                    ExecuteBlock(frame, condition.block);
+                }
+                return ValueHelpers.ToBool(frame.EvalStack.Pop());
+            }
+
+            default:
+                return false;
+        }
+    }
+
+    private static InstructionDto[]? GetInstructionBlock(JsonElement operand, string name)
+    {
+        if (operand.ValueKind != JsonValueKind.Object || !operand.TryGetProperty(name, out var arr) || arr.ValueKind != JsonValueKind.Array)
+        {
+            return null;
+        }
+
+        return JsonSerializer.Deserialize<InstructionDto[]>(arr.GetRawText()) ?? Array.Empty<InstructionDto>();
+    }
+
+    private static string? GetFieldName(JsonElement operand)
+    {
+        if (operand.ValueKind != JsonValueKind.Object || !operand.TryGetProperty("field", out var f))
+            return null;
+
+        if (f.ValueKind == JsonValueKind.String)
+            return f.GetString();
+
+        if (f.ValueKind == JsonValueKind.Object && f.TryGetProperty("name", out var n))
+            return n.GetString();
+
+        return null;
+    }
+
+    private static (string declaringType, string fieldName) GetStaticFieldKey(JsonElement operand)
+    {
+        if (operand.ValueKind != JsonValueKind.Object || !operand.TryGetProperty("field", out var f))
+            throw new InvalidOperationException("ldsfld/stsfld missing operand.field");
+
+        if (f.ValueKind == JsonValueKind.Object)
+        {
+            var declaringType = f.TryGetProperty("declaringType", out var dt) ? dt.GetString() ?? "" : "";
+            var fieldName = f.TryGetProperty("name", out var n) ? n.GetString() ?? "" : "";
+            return (declaringType, fieldName);
+        }
+
+        throw new InvalidOperationException("ldsfld/stsfld operand.field must be an object");
+    }
+
+    private static string? GetString(JsonElement element, string property)
+    {
+        if (element.ValueKind != JsonValueKind.Object)
+            return null;
+
+        return element.TryGetProperty(property, out var p) && p.ValueKind == JsonValueKind.String
+            ? p.GetString()
+            : null;
+    }
+
+    private static bool TryGetInt(JsonElement element, string property, out int value)
+    {
+        value = default;
+        if (element.ValueKind != JsonValueKind.Object)
+            return false;
+
+        if (!element.TryGetProperty(property, out var p))
+            return false;
+
+        if (p.ValueKind == JsonValueKind.Number && p.TryGetInt32(out value))
+            return true;
+
+        if (p.ValueKind == JsonValueKind.String && int.TryParse(p.GetString(), out value))
+            return true;
+
+        return false;
     }
 }

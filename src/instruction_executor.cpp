@@ -1,4 +1,5 @@
 #include "instruction_executor.hpp"
+#include "objectir_type_names.hpp"
 #include <algorithm>
 #include <cmath>
 #include <cctype>
@@ -328,10 +329,10 @@ Instruction InstructionExecutor::ParseJsonInstruction(const json& instrJson) {
                 CallTarget target;
                 target.declaringType = methodJson.value("declaringType", "");
                 target.name = methodJson.value("name", "");
-                target.returnType = methodJson.value("returnType", "void");
+                target.returnType = TypeNames::NormalizeTypeName(methodJson.value("returnType", "void"));
                 if (methodJson.contains("parameterTypes") && methodJson["parameterTypes"].is_array()) {
                     for (const auto& param : methodJson["parameterTypes"]) {
-                        target.parameterTypes.push_back(param.get<std::string>());
+                        target.parameterTypes.push_back(TypeNames::NormalizeTypeName(param.get<std::string>()));
                     }
                 }
                 instr.callTarget = std::move(target);
@@ -669,10 +670,10 @@ void InstructionExecutor::Execute(
                     throw std::runtime_error("CallVirt requires object instance on stack");
                 }
                 auto instance = instanceValue.AsObject();
-                result = vm->InvokeMethod(instance, target.name, callArgs);
+                result = vm->InvokeMethod(instance, target, callArgs);
             } else {
                 auto classRef = vm->GetClass(target.declaringType);
-                result = vm->InvokeStaticMethod(classRef, target.name, callArgs);
+                result = vm->InvokeStaticMethod(classRef, target, callArgs);
             }
 
             if (!isVoidReturn) {

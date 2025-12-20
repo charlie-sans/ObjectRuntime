@@ -11,27 +11,19 @@ namespace OCRuntime
     {
         public static void Main(string[] args)
         {
-            var builder = new IRBuilder("HelloWorld");
-
-            // Define a class with a Main method
-#pragma warning disable CS8602 // Dereference of a possibly null reference.
-            builder.Class("Program")
-                .Namespace("HelloWorld")
-                .Method("Main", TypeReference.Void)
-                    .Static()
-                        .Body()
-                        .Ldstr("meow")
-                        .Call(Systems.WriteLine)
-                        .Ret()
-                    .EndBody()
-                    .EndMethod()
-                .EndClass();
-#pragma warning restore CS8602 // Dereference of a possibly null reference.
-            
-            var program = builder.Build().DumpJson();
-            Console.WriteLine(program);
-            var Runtime = new IRRuntime(program);
-            Runtime.Run();
+            // Hardcoded Text IR HelloWorld
+            var textIr = @"module HelloWorld
+class Program {
+    static method Main() -> void {
+        ldstr ""Hello from Text IR!""
+        call System.Console.WriteLine(string) -> void
+        ret
+    }
+}
+";
+            Console.WriteLine("--- Text IR Input ---\n" + textIr);
+            var runtime = new IRRuntime(textIr);
+            runtime.Run();
         }
     }
 }

@@ -1,0 +1,71 @@
+using System.Text.Json;
+
+namespace OCRuntime.IR;
+
+public sealed class ModuleDto
+{
+    public string name { get; set; } = "";
+    public string version { get; set; } = "";
+    public JsonElement metadata { get; set; }
+    public TypeDto[] types { get; set; } = Array.Empty<TypeDto>();
+    public JsonElement functions { get; set; }
+}
+
+public sealed class TypeDto
+{
+    public string kind { get; set; } = "";
+    public string name { get; set; } = "";
+    public string? _namespace { get; set; }
+    public string? access { get; set; }
+
+    public bool isAbstract { get; set; }
+    public bool isSealed { get; set; }
+
+    public FieldDto[] fields { get; set; } = Array.Empty<FieldDto>();
+    public MethodDto[] methods { get; set; } = Array.Empty<MethodDto>();
+
+    public JsonElement interfaces { get; set; }
+    public JsonElement baseInterfaces { get; set; }
+    public JsonElement genericParameters { get; set; }
+    public JsonElement properties { get; set; }
+}
+
+public sealed class FieldDto
+{
+    public string name { get; set; } = "";
+    public string type { get; set; } = "";
+    public string? access { get; set; }
+    public bool isStatic { get; set; }
+    public bool isReadOnly { get; set; }
+}
+
+public sealed class MethodDto
+{
+    public string name { get; set; } = "";
+    public string returnType { get; set; } = "void";
+    public string? access { get; set; }
+
+    public bool isStatic { get; set; }
+    public bool isVirtual { get; set; }
+    public bool isOverride { get; set; }
+    public bool isAbstract { get; set; }
+    public bool isConstructor { get; set; }
+
+    public ParameterDto[] parameters { get; set; } = Array.Empty<ParameterDto>();
+    public LocalVariableDto[] localVariables { get; set; } = Array.Empty<LocalVariableDto>();
+
+    public int instructionCount { get; set; }
+    public InstructionDto[] instructions { get; set; } = Array.Empty<InstructionDto>();
+}
+
+public sealed class ParameterDto
+{
+    public string name { get; set; } = "";
+    public string type { get; set; } = "";
+}
+
+public sealed class LocalVariableDto
+{
+    public string name { get; set; } = "";
+    public string type { get; set; } = "";
+}

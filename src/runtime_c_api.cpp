@@ -258,6 +258,58 @@ RUNTIME_API void *LoadModuleFromString(void *vmPtr, const char *json)
     return nullptr;
 }
 
+RUNTIME_API int32_t LoadPluginLibrary(void *vmPtr, const char *pluginPath)
+{
+    if (!vmPtr || !pluginPath)
+    {
+        SetLastError("Invalid arguments to LoadPluginLibrary");
+        return 0;
+    }
+
+    try
+    {
+        auto *handle = AsRuntimeHandle(vmPtr);
+        auto *vm = GetVm(handle);
+        vm->LoadPlugin(pluginPath);
+        ClearLastError();
+        return 1;
+    }
+    catch (const std::exception &ex)
+    {
+        SetLastError(ex.what());
+    }
+    catch (...)
+    {
+        SetLastError("Unknown error in LoadPluginLibrary");
+    }
+    return 0;
+}
+
+RUNTIME_API void UnloadAllPluginLibraries(void *vmPtr)
+{
+    if (!vmPtr)
+    {
+        SetLastError("Invalid arguments to UnloadAllPluginLibraries");
+        return;
+    }
+
+    try
+    {
+        auto *handle = AsRuntimeHandle(vmPtr);
+        auto *vm = GetVm(handle);
+        vm->UnloadAllPlugins();
+        ClearLastError();
+    }
+    catch (const std::exception &ex)
+    {
+        SetLastError(ex.what());
+    }
+    catch (...)
+    {
+        SetLastError("Unknown error in UnloadAllPluginLibraries");
+    }
+}
+
 RUNTIME_API void *LoadFOBModuleFromFile(void *vmPtr, const char *filePath, char **entryClassName, char **entryMethodName)
 {
     if (!vmPtr || !filePath || !entryClassName || !entryMethodName)
