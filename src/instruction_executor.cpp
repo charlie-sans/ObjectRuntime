@@ -454,7 +454,7 @@ void InstructionExecutor::Execute(
         }
 
         case OpCode::LdLoc: {
-            std::cerr << "[" << context->GetMethod()->GetName() << "] Executing LdLoc '" << instr.identifier << "'" << std::endl;
+            // std::cerr << "[" << context->GetMethod()->GetName() << "] Executing LdLoc '" << instr.identifier << "'" << std::endl;
             context->PushStack(context->GetLocal(instr.identifier));
             break;
         }
@@ -486,7 +486,7 @@ void InstructionExecutor::Execute(
 
         case OpCode::StLoc: {
             auto value = context->PopStack();
-            std::cerr << "[" << context->GetMethod()->GetName() << "] Executing StLoc '" << instr.identifier << "'" << std::endl;
+            // std::cerr << "[" << context->GetMethod()->GetName() << "] Executing StLoc '" << instr.identifier << "'" << std::endl;
             context->SetLocal(instr.identifier, value);
             break;
         }

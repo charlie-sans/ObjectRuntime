@@ -33,3 +33,10 @@ target/
 dist/
 node_modules/
 .env
+.cmake
+*.dll
+*.so
+*.dylib
+*.lib
+*.ninja
+*.a

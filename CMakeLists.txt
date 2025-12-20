@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.16)
+cmake_minimum_required(VERSION 3.6)
 project(ObjectIR.CppRuntime VERSION 1.0.0 LANGUAGES CXX)
 
 # Newer CMake versions dropped compatibility with policies < 3.5.

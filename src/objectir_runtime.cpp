@@ -551,7 +551,7 @@ ExecutionContext::ExecutionContext(MethodRef method)
     // Debug: Print locals mapping for this execution context
     // std::cerr << "[" << _method->GetName() << "] ExecutionContext locals: count=" << locals.size() << std::endl;
     for (size_t i = 0; i < locals.size(); ++i) {
-        std::cerr << "  [" << _method->GetName() << "] local index " << i << " -> '" << locals[i].first << "' (" << locals[i].second.ToString() << ")" << std::endl;
+        // std::cerr << "  [" << _method->GetName() << "] local index " << i << " -> '" << locals[i].first << "' (" << locals[i].second.ToString() << ")" << std::endl;
     }
 
     const auto& parameters = _method->GetParameters();
@@ -563,7 +563,7 @@ ExecutionContext::ExecutionContext(MethodRef method)
     // Debug: Print parameters mapping for this execution context
     // std::cerr << "[" << _method->GetName() << "] ExecutionContext parameters: count=" << parameters.size() << std::endl;
     for (size_t i = 0; i < parameters.size(); ++i) {
-        std::cerr << "  [" << _method->GetName() << "] param index " << i << " -> '" << parameters[i].first << "' (" << parameters[i].second.ToString() << ")" << std::endl;
+        // std::cerr << "  [" << _method->GetName() << "] param index " << i << " -> '" << parameters[i].first << "' (" << parameters[i].second.ToString() << ")" << std::endl;
     }
 }
 
@@ -607,7 +607,7 @@ void ExecutionContext::SetLocal(const std::string& name, const Value& value) {
         std::cerr << "[" << _method->GetName() << "] SetLocal failed - Local variable not found: '" << name << "'" << std::endl;
         throw std::runtime_error("Local variable not found: " + name);
     }
-    std::cerr << "[" << _method->GetName() << "] SetLocal: '" << name << "' -> index " << it->second << std::endl;
+    // std::cerr << "[" << _method->GetName() << "] SetLocal: '" << name << "' -> index " << it->second << std::endl;
     SetLocal(it->second, value);
 }
 
@@ -617,7 +617,7 @@ Value ExecutionContext::GetLocal(const std::string& name) const {
         std::cerr << "[" << _method->GetName() << "] GetLocal failed - Local variable not found: '" << name << "'" << std::endl;
         throw std::runtime_error("Local variable not found: " + name);
     }
-    std::cerr << "[" << _method->GetName() << "] GetLocal: '" << name << "' -> index " << it->second << std::endl;
+    // std::cerr << "[" << _method->GetName() << "] GetLocal: '" << name << "' -> index " << it->second << std::endl;
     return GetLocal(it->second);
 }
 
