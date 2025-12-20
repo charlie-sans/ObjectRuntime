@@ -356,8 +356,17 @@ Instruction InstructionExecutor::ParseJsonInstruction(const json& instrJson) {
         case OpCode::Ble: {
             if (operand.is_object()) {
                 if (operand.contains("target")) {
-                    instr.operandInt = operand.value("target", 0);
-                    instr.hasOperandInt = true;
+                    const auto& targetNode = operand["target"];
+                    if (targetNode.is_number_integer()) {
+                        instr.operandInt = targetNode.get<int32_t>();
+                        instr.hasOperandInt = true;
+                    } else if (targetNode.is_string()) {
+                        instr.operandString = targetNode.get<std::string>();
+                        instr.hasOperandInt = false;
+                    } else {
+                        instr.operandInt = 0;
+                        instr.hasOperandInt = true;
+                    }
                 } else if (operand.contains("offset")) {
                     instr.operandInt = operand.value("offset", 0);
                     instr.hasOperandInt = true;
@@ -719,7 +728,7 @@ void InstructionExecutor::Execute(
 
             // Pop the condition value from the stack
             Value conditionValue = context->PopStack();
-            bool condition = conditionValue.AsBool();
+            bool condition = ValueToBool(conditionValue);
 
             if (condition) {
                 // Execute then block

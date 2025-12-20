@@ -186,6 +186,13 @@ IRTextParser::Token IRTextParser::Lexer::NextToken()
             Advance();
             return MakeToken(Token::Type::Arrow, "->");
         }
+        // Negative numeric literal (e.g. -2, -3.14)
+        if (std::isdigit(Current()) || (Current() == '.' && std::isdigit(Peek())))
+        {
+            std::string value = "-";
+            value += ReadNumber();
+            return MakeToken(Token::Type::Number, value);
+        }
         return MakeToken(Token::Type::Identifier, "-");
     case ':':
         return MakeToken(Token::Type::Colon, ":");
@@ -335,11 +342,17 @@ json IRTextParser::Parser::ParseClass()
     // Parse members
     while (current < tokens.size() && !Check(Token::Type::RBrace))
     {
-        // Check for access modifiers and skip them - use while loop in case there are multiple modifiers
+        // Collect modifiers (they apply to the next member only)
+        bool isStatic = false;
+        bool isVirtual = false;
+        bool isAbstract = false;
         while (Peek().value == "private" || Peek().value == "public" || Peek().value == "protected" ||
                Peek().value == "static" || Peek().value == "virtual" || Peek().value == "abstract")
         {
-            Advance(); // Skip modifier
+            if (Peek().value == "static") isStatic = true;
+            if (Peek().value == "virtual") isVirtual = true;
+            if (Peek().value == "abstract") isAbstract = true;
+            Advance();
         }
 
         if (Peek().value == "field")
@@ -348,11 +361,20 @@ json IRTextParser::Parser::ParseClass()
         }
         else if (Peek().value == "method")
         {
-            classJson["methods"].push_back(ParseMethod());
+            json method = ParseMethod();
+            method["isStatic"] = isStatic;
+            method["isVirtual"] = isVirtual;
+            method["isAbstract"] = isAbstract;
+            classJson["methods"].push_back(method);
         }
         else if (Peek().value == "constructor")
         {
-            classJson["methods"].push_back(ParseMethod());
+            json method = ParseMethod();
+            // Constructors are never static, but keep virtual/abstract metadata if present
+            method["isStatic"] = false;
+            method["isVirtual"] = isVirtual;
+            method["isAbstract"] = isAbstract;
+            classJson["methods"].push_back(method);
         }
         else if (!Check(Token::Type::RBrace))
         {
@@ -501,10 +523,10 @@ json IRTextParser::Parser::ParseMethod()
     }
     method["returnType"] = returnType;
 
-    if (!isConstructor)
-    {
-        method["isStatic"] = false;
-    }
+    // Default; may be overridden by ParseClass() based on parsed modifiers.
+    method["isStatic"] = false;
+    method["isVirtual"] = false;
+    method["isAbstract"] = false;
 
     // Parse method body - collect all instructions and local declarations
     if (Match(Token::Type::LBrace))

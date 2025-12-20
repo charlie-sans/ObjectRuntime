@@ -9,7 +9,22 @@
 #include <vector>
 
 #if defined(_WIN32)
+    #ifndef WIN32_LEAN_AND_MEAN
+        #define WIN32_LEAN_AND_MEAN
+    #endif
+    #ifndef NOMINMAX
+        #define NOMINMAX
+    #endif
     #include <windows.h>
+
+    // windows.h (via rpc.h/winuser.h) defines macros that collide with common identifiers.
+    // Ensure they don't break our C++ method/parameter names.
+    #if defined(interface)
+        #undef interface
+    #endif
+    #if defined(RegisterClass)
+        #undef RegisterClass
+    #endif
 #else
     #include <dlfcn.h>
 #endif
@@ -521,13 +536,13 @@ ObjectRef Class::CreateInstance() const {
     return obj;
 }
 
-void Class::AddInterface(ClassRef interface) {
-    _interfaces.push_back(interface);
+void Class::AddInterface(ClassRef interfaceType) {
+    _interfaces.push_back(interfaceType);
 }
 
-bool Class::ImplementsInterface(ClassRef interface) const {
+bool Class::ImplementsInterface(ClassRef interfaceType) const {
     for (const auto& iface : _interfaces) {
-        if (iface == interface) return true;
+        if (iface == interfaceType) return true;
     }
     return false;
 }

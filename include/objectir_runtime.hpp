@@ -11,6 +11,15 @@
 #include <variant>
 #include <type_traits>
 #include <cstdint>
+// Windows headers sometimes leak macros that collide with common identifiers.
+// Keep the runtime headers resilient even if included after <windows.h>.
+#if defined(interface)
+    #undef interface
+#endif
+#if defined(RegisterClass)
+    #undef RegisterClass
+#endif
+
 #include <any>
 #include <iostream>
 #include <nlohmann/json.hpp>
@@ -357,8 +366,8 @@ namespace ObjectIR {
         [[nodiscard]] ObjectRef CreateInstance() const;
 
         // Interface/contract support
-        void AddInterface(ClassRef interface);
-        [[nodiscard]] bool ImplementsInterface(ClassRef interface) const;
+        void AddInterface(ClassRef interfaceType);
+        [[nodiscard]] bool ImplementsInterface(ClassRef interfaceType) const;
 
     private:
         std::string _name;
