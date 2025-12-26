@@ -458,7 +458,7 @@ public sealed class IRRuntime
                                 handled = true;
                                 break;
                             }
-                            var catchType = Type.GetType(cb.exceptionType, throwOnError: false, ignoreCase: false);
+                            var catchType = ResolveClrType(cb.exceptionType);
                             if (catchType != null && catchType.IsAssignableFrom(ex.GetType()))
                             {
                                 frame.EvalStack.Push(ex);

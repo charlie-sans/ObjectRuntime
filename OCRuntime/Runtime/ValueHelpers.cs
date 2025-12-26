@@ -66,6 +66,7 @@ public static class ValueHelpers
             "double" or "float64" or "system.double" or "system.float64" => ToDouble(value),
 
             "string" or "system.string" => value?.ToString(),
+            "object" or "system.object" => value,
 
             _ => value
         };
